@@ -1,0 +1,134 @@
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #000;
+  font-family: sans-serif;
+}
+
+#container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* --- Layout Container --- */
+#preview-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: black;
+}
+
+/* --- Default Mode (Overlay) --- */
+#camera-wrapper {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  width: 240px;
+  /* Slightly larger for better visibility */
+  aspect-ratio: 4/3;
+  z-index: 10;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  transition: all 0.3s ease;
+}
+
+#scene-wrapper {
+  width: 100%;
+  height: 100%;
+}
+
+/* --- Debug Mode (Split Screen) --- */
+body.debug-view #preview-container {
+  display: flex;
+}
+
+body.debug-view #camera-wrapper {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: auto;
+  aspect-ratio: auto;
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  border-right: 1px solid #333;
+  box-shadow: none;
+  min-width: 0;
+}
+
+body.debug-view #scene-wrapper {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+}
+
+/* --- Common Inner Elements --- */
+#webcam {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+#debug_canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  pointer-events: none;
+  /* Ensure clicks pass through if needed, though they are usually caught by wrapper */
+}
+
+#output_canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#controls {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 10px 20px;
+  border-radius: 20px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+#controls button {
+  background: rgba(255, 255, 255, 0.8);
+  border: none;
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+#controls button:hover {
+  background: white;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 8px rgba(0, 0, 0, 0.2);
+}
+
+#controls button:active {
+  transform: translateY(0);
+}
