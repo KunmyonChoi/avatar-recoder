@@ -340,6 +340,210 @@ function updateChatOverlayPosition() {
     }
 }
 
+function updateCaptionOverlayPosition() {
+    const captionOverlay = document.getElementById('caption-overlay');
+    if (!captionOverlay) return;
+
+    if (isMiniAvatar && miniAvatarPosition.x !== null) {
+        // Mini avatar 모드: 아바타 몸통 위치에 표시
+        const avatarWidth = 300;
+        const avatarHeight = 400;
+        const overlayWidth = 300;
+        const avatarX = miniAvatarPosition.x;
+        const avatarY = miniAvatarPosition.y;
+
+        captionOverlay.style.left = (avatarX + avatarWidth / 2 - overlayWidth / 2) + 'px';
+        captionOverlay.style.top = (avatarY + avatarHeight * 0.55) + 'px'; // 몸통 위치 (55%)
+    } else {
+        // Full avatar 모드: CSS 기본값 사용
+        captionOverlay.style.left = '';
+        captionOverlay.style.top = '';
+    }
+}
+
+// --- Speech-to-Text Captions ---
+let isCaptionsEnabled = false;
+let speechRecognition = null;
+let currentCaption = '';
+let captionTimeout = null;
+
+function initSpeechRecognition() {
+    // Check browser support
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.warn('Speech Recognition not supported in this browser');
+        return false;
+    }
+
+    speechRecognition = new SpeechRecognition();
+    speechRecognition.continuous = true;
+    speechRecognition.interimResults = true;
+    speechRecognition.lang = 'ko-KR'; // Korean, can be changed
+
+    speechRecognition.onresult = (event) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+                finalTranscript += transcript;
+            } else {
+                interimTranscript += transcript;
+            }
+        }
+
+        // Update caption display
+        const captionEl = document.getElementById('caption-text');
+        if (captionEl) {
+            if (finalTranscript) {
+                captionEl.textContent = finalTranscript;
+                captionEl.classList.remove('interim');
+                currentCaption = finalTranscript;
+
+                // Clear caption after delay
+                clearTimeout(captionTimeout);
+                captionTimeout = setTimeout(() => {
+                    captionEl.textContent = '';
+                    currentCaption = '';
+                }, 4000);
+            } else if (interimTranscript) {
+                captionEl.textContent = interimTranscript;
+                captionEl.classList.add('interim');
+                currentCaption = interimTranscript;
+
+                // Reset timeout while speaking
+                clearTimeout(captionTimeout);
+            }
+        }
+    };
+
+    speechRecognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+            alert('마이크 권한이 필요합니다. 브라우저 설정에서 마이크 권한을 허용해주세요.');
+            stopCaptions();
+        }
+    };
+
+    speechRecognition.onend = () => {
+        // Restart if still enabled (continuous mode can stop unexpectedly)
+        if (isCaptionsEnabled) {
+            try {
+                speechRecognition.start();
+            } catch (e) {
+                console.warn('Failed to restart speech recognition:', e);
+            }
+        }
+    };
+
+    return true;
+}
+
+function startCaptions() {
+    if (!speechRecognition && !initSpeechRecognition()) {
+        alert('이 브라우저는 음성 인식을 지원하지 않습니다.');
+        return;
+    }
+
+    try {
+        speechRecognition.start();
+        isCaptionsEnabled = true;
+        document.body.classList.add('captions-enabled');
+
+        const btn = document.getElementById('toggle-captions');
+        if (btn) {
+            btn.textContent = 'Captions OFF';
+            btn.classList.add('captions-active');
+        }
+    } catch (e) {
+        console.error('Failed to start speech recognition:', e);
+    }
+}
+
+function stopCaptions() {
+    if (speechRecognition) {
+        try {
+            speechRecognition.stop();
+        } catch (e) {
+            // Ignore
+        }
+    }
+
+    isCaptionsEnabled = false;
+    document.body.classList.remove('captions-enabled');
+    currentCaption = '';
+
+    const captionEl = document.getElementById('caption-text');
+    if (captionEl) {
+        captionEl.textContent = '';
+    }
+
+    const btn = document.getElementById('toggle-captions');
+    if (btn) {
+        btn.textContent = 'Captions ON';
+        btn.classList.remove('captions-active');
+    }
+
+    clearTimeout(captionTimeout);
+}
+
+function toggleCaptions() {
+    if (isCaptionsEnabled) {
+        stopCaptions();
+    } else {
+        startCaptions();
+    }
+}
+
+function drawCaptionToCanvas(ctx, canvasWidth, canvasHeight) {
+    if (!currentCaption) return;
+
+    const fontSize = isMiniAvatar ? 16 : 28;
+    const padding = isMiniAvatar ? 10 : 16;
+    const maxWidth = isMiniAvatar ? 280 : canvasWidth * 0.8;
+
+    ctx.font = `500 ${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Calculate text dimensions
+    const textWidth = Math.min(ctx.measureText(currentCaption).width + padding * 2, maxWidth);
+    const bgHeight = fontSize + padding * 2;
+
+    let x, y;
+    if (isMiniAvatar && miniAvatarPosition.x !== null) {
+        // Mini avatar 모드: 아바타 몸통 위치에 표시
+        const scaleX = canvasWidth / window.innerWidth;
+        const scaleY = canvasHeight / window.innerHeight;
+        const avatarWidth = 300 * scaleX;
+        const avatarHeight = 400 * scaleY;
+        x = (miniAvatarPosition.x * scaleX) + avatarWidth / 2;
+        y = (miniAvatarPosition.y * scaleY) + avatarHeight * 0.6; // 몸통 위치 (60%)
+    } else {
+        // Full avatar 모드: 하단 중앙
+        x = canvasWidth / 2;
+        y = canvasHeight - 160;
+    }
+
+    // Draw background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.beginPath();
+    ctx.roundRect(x - textWidth / 2, y - bgHeight / 2, textWidth, bgHeight, 8);
+    ctx.fill();
+
+    // Draw text
+    ctx.fillStyle = 'white';
+    ctx.fillText(currentCaption, x, y, maxWidth - padding * 2);
+}
+
+function setupCaptionsButton() {
+    const toggleCaptionsBtn = document.getElementById('toggle-captions');
+    if (toggleCaptionsBtn) {
+        toggleCaptionsBtn.addEventListener('click', toggleCaptions);
+    }
+}
+
 // --- Initialization ---
 async function init() {
     const toggleDebugBtn = document.getElementById('toggle-debug');
@@ -368,7 +572,7 @@ async function init() {
     if (toggleBodyBtn) {
         toggleBodyBtn.addEventListener('click', () => {
             BODY_TRACKING_ENABLED = !BODY_TRACKING_ENABLED;
-            toggleBodyBtn.innerText = BODY_TRACKING_ENABLED ? "Disable Body Tracking" : "Enable Body Tracking";
+            toggleBodyBtn.innerHTML = BODY_TRACKING_ENABLED ? "Body<br>ON" : "Body<br>OFF";
             // Body tracking 비활성화 시 팔 상태 리셋
             if (!BODY_TRACKING_ENABLED) {
                 leftArmActive = false;
@@ -390,6 +594,9 @@ async function init() {
 
     // Chat overlay
     setupChatInput();
+
+    // Speech-to-text captions
+    setupCaptionsButton();
 
     // 키보드 단축키: Escape로 녹화 중지
     document.addEventListener('keydown', (e) => {
@@ -670,8 +877,9 @@ function toggleAvatarSize() {
         }
     }
 
-    // 채팅 오버레이 위치 업데이트
+    // 채팅/캡션 오버레이 위치 업데이트
     updateChatOverlayPosition();
+    updateCaptionOverlayPosition();
 
     // 렌더러 크기 업데이트
     setTimeout(() => {
@@ -748,8 +956,9 @@ function onDragMove(e) {
     miniAvatarPosition.x = newX;
     miniAvatarPosition.y = newY;
 
-    // 채팅 오버레이 위치 업데이트
+    // 채팅/캡션 오버레이 위치 업데이트
     updateChatOverlayPosition();
+    updateCaptionOverlayPosition();
 
     e.preventDefault();
 }
@@ -933,6 +1142,9 @@ function startRecording() {
         // 3. 채팅 메시지 그리기
         drawChatMessagesToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
 
+        // 4. 음성 자막 그리기
+        drawCaptionToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
+
         compositeAnimationId = requestAnimationFrame(compositeFrame);
     }
     compositeFrame();
@@ -1018,7 +1230,6 @@ function startRecording() {
     // 버튼 상태 업데이트
     const startBtn = document.getElementById('start-record');
     const stopBtn = document.getElementById('stop-record');
-    const toggleChatBtn = document.getElementById('toggle-chat');
     if (startBtn) {
         startBtn.disabled = true;
         startBtn.classList.remove('recording');
@@ -1026,9 +1237,6 @@ function startRecording() {
     if (stopBtn) {
         stopBtn.disabled = false;
         stopBtn.classList.add('recording');
-    }
-    if (toggleChatBtn) {
-        toggleChatBtn.disabled = false;
     }
 }
 
@@ -1039,27 +1247,16 @@ function stopRecording() {
 
     // 녹화 중 컨트롤바 다시 보이기
     document.body.classList.remove('recording');
-    document.body.classList.remove('chat-enabled');
-
-    // 채팅 메시지 및 상태 초기화
-    clearChatMessages();
-    isChatEnabled = false;
 
     // 버튼 상태 업데이트
     const startBtn = document.getElementById('start-record');
     const stopBtn = document.getElementById('stop-record');
-    const toggleChatBtn = document.getElementById('toggle-chat');
     if (startBtn && screenStream) {
         startBtn.disabled = false;
     }
     if (stopBtn) {
         stopBtn.disabled = true;
         stopBtn.classList.remove('recording');
-    }
-    if (toggleChatBtn) {
-        toggleChatBtn.disabled = true;
-        toggleChatBtn.innerText = 'Chat ON';
-        toggleChatBtn.classList.remove('chat-active');
     }
 }
 
@@ -1083,13 +1280,11 @@ function downloadRecording() {
 function updateScreenCaptureButtons(isCapturing) {
     const selectBtn = document.getElementById('select-screen');
     const stopBtn = document.getElementById('stop-screen');
-    const toggleAvatarBtn = document.getElementById('toggle-avatar-size');
     const startRecordBtn = document.getElementById('start-record');
     const stopRecordBtn = document.getElementById('stop-record');
 
     if (selectBtn) selectBtn.disabled = isCapturing;
     if (stopBtn) stopBtn.disabled = !isCapturing;
-    if (toggleAvatarBtn) toggleAvatarBtn.disabled = !isCapturing;
     if (startRecordBtn) startRecordBtn.disabled = !isCapturing;
     if (stopRecordBtn) stopRecordBtn.disabled = true;
 }

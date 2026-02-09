@@ -145,6 +145,14 @@ body.debug-view #scene-wrapper {
   transform: none;
 }
 
+/* Body Tracking 버튼 2줄 표시 */
+#toggle-body {
+  width: 70px;
+  line-height: 1.2;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
 #controls .divider {
   color: rgba(255, 255, 255, 0.5);
   display: flex;
@@ -346,7 +354,7 @@ body.recording #audio-mix-slider {
   transform: translateX(-50%);
 }
 
-body.recording.chat-enabled #chat-overlay {
+body.chat-enabled #chat-overlay {
   display: block;
 }
 
@@ -417,12 +425,12 @@ body.mini-avatar .chat-message {
   gap: 8px;
 }
 
-body.recording.chat-enabled #chat-input-container {
+body.chat-enabled #chat-input-container {
   display: flex;
 }
 
-body.recording:not(.chat-enabled) #chat-overlay,
-body.recording:not(.chat-enabled) #chat-input-container {
+body:not(.chat-enabled) #chat-overlay,
+body:not(.chat-enabled) #chat-input-container {
   display: none;
 }
 
@@ -469,4 +477,75 @@ body.recording:not(.chat-enabled) #chat-input-container {
 
 #chat-input::placeholder {
   color: #999;
+}
+
+/* --- Caption Overlay (Speech-to-Text) --- */
+#caption-overlay {
+  display: none;
+  position: absolute;
+  bottom: 140px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80%;
+  max-width: 800px;
+  z-index: 17;
+  pointer-events: none;
+  text-align: center;
+}
+
+body.captions-enabled #caption-overlay {
+  display: block;
+}
+
+/* Mini Avatar 모드에서 자막 위치 조정 - JS로 위치 제어 */
+body.mini-avatar #caption-overlay {
+  bottom: auto;
+  left: auto;
+  transform: none;
+  width: 300px;
+  max-width: 300px;
+}
+
+#caption-text {
+  display: inline-block;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.8);
+  max-width: 100%;
+  word-wrap: break-word;
+  animation: captionFadeIn 0.2s ease-out;
+}
+
+body.mini-avatar #caption-text {
+  font-size: 16px;
+  padding: 8px 16px;
+}
+
+#caption-text:empty {
+  display: none;
+}
+
+#caption-text.interim {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+@keyframes captionFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+#toggle-captions.captions-active {
+  background: #cc8844;
+  color: white;
 }
