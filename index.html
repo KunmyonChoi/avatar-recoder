@@ -20,6 +20,14 @@
       <div id="scene-wrapper">
         <canvas id="output_canvas"></canvas>
       </div>
+      <!-- Chat Overlay -->
+      <div id="chat-overlay">
+        <div id="chat-messages"></div>
+      </div>
+      <div id="chat-input-container">
+        <input type="text" id="chat-input" placeholder="메시지를 입력하세요... (Enter로 전송)" autocomplete="off">
+        <button id="clear-chat" title="모든 채팅 지우기">✕</button>
+      </div>
     </div>
     <div id="controls">
       <button id="toggle-debug">Show Landmarks</button>
@@ -43,6 +51,7 @@
       </div>
       <button id="start-record" disabled>Start Recording</button>
       <button id="stop-record" disabled>Stop Recording</button>
+      <button id="toggle-chat" disabled>Chat ON</button>
     </div>
   </div>
   <script type="module" src="./main.js"></script>

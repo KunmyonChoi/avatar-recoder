@@ -161,6 +161,185 @@ let detectedHands = {
     right: null   // MediaPipe Right Hand → Avatar Left
 };
 
+// --- Chat Overlay ---
+const MAX_VISIBLE_MESSAGES = 5;
+let chatMessages = [];
+let isChatEnabled = false;
+
+function addChatMessage(text) {
+    if (!text.trim()) return;
+
+    const messagesContainer = document.getElementById('chat-messages');
+    if (!messagesContainer) return;
+
+    // Create new message element
+    const messageEl = document.createElement('div');
+    messageEl.className = 'chat-message';
+    messageEl.textContent = text;
+
+    // Append - newest at bottom
+    messagesContainer.appendChild(messageEl);
+
+    // Store message reference (oldest first, newest last)
+    chatMessages.push(messageEl);
+
+    // Remove very old messages from DOM
+    updateMessageFading();
+}
+
+function updateMessageFading() {
+    // 오래된 메시지(배열 앞)는 DOM에서 제거
+    while (chatMessages.length > MAX_VISIBLE_MESSAGES + 1) {
+        const oldMessage = chatMessages.shift();
+        oldMessage.remove();
+    }
+}
+
+function clearChatMessages() {
+    const messagesContainer = document.getElementById('chat-messages');
+    if (messagesContainer) {
+        messagesContainer.innerHTML = '';
+    }
+    chatMessages = [];
+}
+
+function drawChatMessagesToCanvas(ctx, canvasWidth, canvasHeight) {
+    if (chatMessages.length === 0) return;
+
+    const fontSize = isMiniAvatar ? 18 : 24;
+    const padding = isMiniAvatar ? 8 : 14;
+    const lineHeight = fontSize + padding * 2 + 6;
+    const maxWidth = isMiniAvatar ? 300 : 500;
+
+    // 위치 계산
+    let centerX, baseY;
+    if (isMiniAvatar && miniAvatarPosition.x !== null) {
+        // Mini avatar 모드: 아바타 머리 근처
+        const scaleX = canvasWidth / window.innerWidth;
+        const scaleY = canvasHeight / window.innerHeight;
+        const avatarWidth = 300 * scaleX;
+        centerX = (miniAvatarPosition.x * scaleX) + avatarWidth / 2;
+        baseY = (miniAvatarPosition.y * scaleY) + 50; // 아바타 상단 근처
+    } else {
+        // Full avatar 모드: 입력창 위 (하단에서 약 15% 위치)
+        centerX = canvasWidth / 2;
+        baseY = canvasHeight * 0.82;
+    }
+
+    ctx.font = `600 ${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // 메시지 그리기 (chatMessages: oldest first, newest last)
+    const visibleMessages = chatMessages.slice(-MAX_VISIBLE_MESSAGES);
+    visibleMessages.forEach((msgEl, index) => {
+        const age = visibleMessages.length - 1 - index; // 마지막이 최신(age=0)
+        const text = msgEl.textContent;
+        const y = baseY - (age * lineHeight);
+
+        // 투명도 계산 (위로 올라갈수록 흐려짐)
+        let alpha = 1 - (age * 0.2);
+        alpha = Math.max(alpha, 0.1);
+
+        // 배경 그리기
+        const textWidth = Math.min(ctx.measureText(text).width + padding * 2, maxWidth);
+        const bgX = centerX - textWidth / 2;
+        const bgY = y - fontSize / 2 - padding;
+        const bgHeight = fontSize + padding * 2;
+
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.7 * alpha})`;
+        ctx.beginPath();
+        ctx.roundRect(bgX, bgY, textWidth, bgHeight, 12);
+        ctx.fill();
+
+        // 텍스트 그리기
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.fillText(text, centerX, y, maxWidth - padding * 2);
+    });
+}
+
+function setupChatInput() {
+    const chatInput = document.getElementById('chat-input');
+    if (!chatInput) return;
+
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing) {
+            e.preventDefault();
+            const text = chatInput.value;
+            if (text.trim()) {
+                addChatMessage(text);
+                chatInput.value = '';
+            }
+        }
+        // Prevent Escape from stopping recording while typing
+        if (e.key === 'Escape') {
+            e.stopPropagation();
+            chatInput.blur();
+        }
+    });
+
+    // Prevent space from triggering other shortcuts
+    chatInput.addEventListener('keyup', (e) => {
+        e.stopPropagation();
+    });
+
+    // Clear chat button
+    const clearChatBtn = document.getElementById('clear-chat');
+    if (clearChatBtn) {
+        clearChatBtn.addEventListener('click', () => {
+            clearChatMessages();
+        });
+    }
+
+    // Toggle chat button
+    const toggleChatBtn = document.getElementById('toggle-chat');
+    if (toggleChatBtn) {
+        toggleChatBtn.addEventListener('click', () => {
+            toggleChatMode();
+        });
+    }
+}
+
+function toggleChatMode() {
+    isChatEnabled = !isChatEnabled;
+
+    const btn = document.getElementById('toggle-chat');
+    if (btn) {
+        btn.innerText = isChatEnabled ? 'Chat OFF' : 'Chat ON';
+        btn.classList.toggle('chat-active', isChatEnabled);
+    }
+
+    document.body.classList.toggle('chat-enabled', isChatEnabled);
+
+    // 채팅 켜면 입력창에 포커스
+    if (isChatEnabled) {
+        const chatInput = document.getElementById('chat-input');
+        if (chatInput) {
+            setTimeout(() => chatInput.focus(), 100);
+        }
+    }
+}
+
+function updateChatOverlayPosition() {
+    const chatOverlay = document.getElementById('chat-overlay');
+    if (!chatOverlay) return;
+
+    if (isMiniAvatar && miniAvatarPosition.x !== null) {
+        // Mini avatar 모드: 아바타 머리 근처에 위치
+        const avatarWidth = 300;
+        const overlayWidth = 300;
+        const avatarX = miniAvatarPosition.x;
+        const avatarY = miniAvatarPosition.y;
+
+        chatOverlay.style.left = (avatarX + avatarWidth / 2 - overlayWidth / 2) + 'px'; // 중앙 정렬
+        chatOverlay.style.top = (avatarY - 80) + 'px'; // 아바타 머리 높이
+    } else {
+        // Full avatar 모드: CSS 기본값 사용
+        chatOverlay.style.left = '';
+        chatOverlay.style.top = '';
+    }
+}
+
 // --- Initialization ---
 async function init() {
     const toggleDebugBtn = document.getElementById('toggle-debug');
@@ -208,6 +387,16 @@ async function init() {
 
     // Screen capture & recording buttons
     setupScreenCaptureControls();
+
+    // Chat overlay
+    setupChatInput();
+
+    // 키보드 단축키: Escape로 녹화 중지
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && mediaRecorder && mediaRecorder.state === 'recording') {
+            stopRecording();
+        }
+    });
 
     // 초기 오디오 미터 상태
     const micMeter = document.getElementById('mic-meter');
@@ -481,6 +670,9 @@ function toggleAvatarSize() {
         }
     }
 
+    // 채팅 오버레이 위치 업데이트
+    updateChatOverlayPosition();
+
     // 렌더러 크기 업데이트
     setTimeout(() => {
         if (sceneWrapper && renderer && camera) {
@@ -555,6 +747,9 @@ function onDragMove(e) {
     // 위치 저장
     miniAvatarPosition.x = newX;
     miniAvatarPosition.y = newY;
+
+    // 채팅 오버레이 위치 업데이트
+    updateChatOverlayPosition();
 
     e.preventDefault();
 }
@@ -735,6 +930,9 @@ function startRecording() {
             compositeCtx.drawImage(avatarCanvas, 0, 0, compositeCanvas.width, compositeCanvas.height);
         }
 
+        // 3. 채팅 메시지 그리기
+        drawChatMessagesToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
+
         compositeAnimationId = requestAnimationFrame(compositeFrame);
     }
     compositeFrame();
@@ -814,9 +1012,13 @@ function startRecording() {
 
     mediaRecorder.start(100);  // 100ms마다 데이터 수집
 
+    // 녹화 중 컨트롤바 숨기기
+    document.body.classList.add('recording');
+
     // 버튼 상태 업데이트
     const startBtn = document.getElementById('start-record');
     const stopBtn = document.getElementById('stop-record');
+    const toggleChatBtn = document.getElementById('toggle-chat');
     if (startBtn) {
         startBtn.disabled = true;
         startBtn.classList.remove('recording');
@@ -825,6 +1027,9 @@ function startRecording() {
         stopBtn.disabled = false;
         stopBtn.classList.add('recording');
     }
+    if (toggleChatBtn) {
+        toggleChatBtn.disabled = false;
+    }
 }
 
 function stopRecording() {
@@ -832,15 +1037,29 @@ function stopRecording() {
         mediaRecorder.stop();
     }
 
+    // 녹화 중 컨트롤바 다시 보이기
+    document.body.classList.remove('recording');
+    document.body.classList.remove('chat-enabled');
+
+    // 채팅 메시지 및 상태 초기화
+    clearChatMessages();
+    isChatEnabled = false;
+
     // 버튼 상태 업데이트
     const startBtn = document.getElementById('start-record');
     const stopBtn = document.getElementById('stop-record');
+    const toggleChatBtn = document.getElementById('toggle-chat');
     if (startBtn && screenStream) {
         startBtn.disabled = false;
     }
     if (stopBtn) {
         stopBtn.disabled = true;
         stopBtn.classList.remove('recording');
+    }
+    if (toggleChatBtn) {
+        toggleChatBtn.disabled = true;
+        toggleChatBtn.innerText = 'Chat ON';
+        toggleChatBtn.classList.remove('chat-active');
     }
 }
 

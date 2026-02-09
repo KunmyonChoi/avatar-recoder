@@ -290,3 +290,183 @@ body.mini-avatar #scene-wrapper #output_canvas {
   height: 100%;
   pointer-events: none;
 }
+
+/* --- Recording Mode: Show essential controls only --- */
+body.recording #controls {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 8px 15px;
+}
+
+/* 녹화 중 숨길 버튼들 (녹화와 무관한 설정들) */
+body.recording #toggle-debug,
+body.recording #toggle-view,
+body.recording #select-screen,
+body.recording #stop-screen,
+body.recording #start-record,
+body.recording .divider {
+  display: none;
+}
+
+/* 녹화 중 보여줄 컨트롤들: stop-record, toggle-avatar-size, toggle-mic, toggle-body, audio-controls */
+body.recording #controls button {
+  padding: 8px 15px;
+  font-size: 14px;
+}
+
+/* 녹화 중 오디오 미터 강조 */
+body.recording .audio-controls {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+body.recording .audio-meter {
+  background: rgba(0, 0, 0, 0.5);
+  width: 60px;
+  height: 20px;
+}
+
+body.recording #audio-mix-slider {
+  width: 124px;
+}
+
+/* --- Chat Overlay --- */
+#chat-overlay {
+  display: none;
+  position: absolute;
+  width: 400px;
+  height: 200px;
+  z-index: 18;
+  pointer-events: none;
+  overflow: hidden;
+  /* 기본 위치 (Full Avatar 모드) - 입력창 바로 위 */
+  bottom: 140px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+body.recording.chat-enabled #chat-overlay {
+  display: block;
+}
+
+/* Mini Avatar 모드에서는 JS로 위치 제어 */
+body.mini-avatar #chat-overlay {
+  bottom: auto;
+  left: auto;
+  transform: none;
+  width: 300px;
+  height: 150px;
+}
+
+body.mini-avatar .chat-message {
+  font-size: 13px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+}
+
+#chat-messages {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 100%;
+}
+
+.chat-message {
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 10px 16px;
+  border-radius: 15px;
+  margin-bottom: 6px;
+  font-size: 16px;
+  font-weight: 500;
+  text-align: center;
+  animation: chatFadeIn 0.3s ease-out;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* 메시지 나이에 따른 흐려짐 효과 (nth-last-child로 제어, 마지막이 최신) */
+.chat-message:nth-last-child(1) { opacity: 1; }
+.chat-message:nth-last-child(2) { opacity: 0.8; }
+.chat-message:nth-last-child(3) { opacity: 0.6; }
+.chat-message:nth-last-child(4) { opacity: 0.4; }
+.chat-message:nth-last-child(5) { opacity: 0.2; }
+.chat-message:nth-last-child(n+6) { opacity: 0.1; }
+
+@keyframes chatFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Chat Input */
+#chat-input-container {
+  display: none;
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  align-items: center;
+  gap: 8px;
+}
+
+body.recording.chat-enabled #chat-input-container {
+  display: flex;
+}
+
+body.recording:not(.chat-enabled) #chat-overlay,
+body.recording:not(.chat-enabled) #chat-input-container {
+  display: none;
+}
+
+#toggle-chat.chat-active {
+  background: #4488cc;
+  color: white;
+}
+
+#clear-chat {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 100, 100, 0.9);
+  color: white;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+#clear-chat:hover {
+  background: rgba(255, 50, 50, 1);
+  transform: scale(1.1);
+}
+
+#chat-input {
+  width: 400px;
+  padding: 12px 20px;
+  font-size: 16px;
+  border: none;
+  border-radius: 25px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+#chat-input:focus {
+  background: white;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+#chat-input::placeholder {
+  color: #999;
+}
