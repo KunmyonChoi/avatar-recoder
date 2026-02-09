@@ -145,11 +145,16 @@ body.debug-view #scene-wrapper {
   transform: none;
 }
 
+
 /* 2줄 버튼 스타일 */
 #toggle-view,
 #toggle-body,
-#toggle-dialogue {
-  min-width: 70px;
+#toggle-dialogue,
+#toggle-mic,
+#toggle-avatar-size,
+#toggle-screen,
+#toggle-record {
+  min-width: 58px;
   line-height: 1.3;
   padding: 8px 12px;
   font-size: 14px;
@@ -316,10 +321,13 @@ body.recording #controls {
 /* 녹화 중 숨길 버튼들 (녹화와 무관한 설정들) */
 body.recording #toggle-debug,
 body.recording #toggle-view,
-body.recording #select-screen,
-body.recording #stop-screen,
-body.recording #start-record,
+body.recording #toggle-screen,
 body.recording .divider {
+  display: none;
+}
+
+/* Screen sharing 중 Dev 컨트롤 숨김 */
+body.screen-sharing .dev-controls {
   display: none;
 }
 
@@ -424,6 +432,11 @@ body.display-history .dialogue-message:nth-last-child(n+6) { opacity: 0.1; }
 body.display-single .dialogue-message {
   opacity: 1;
   animation: none;
+}
+
+/* 빈 메시지는 숨김 */
+.dialogue-message:empty {
+  display: none;
 }
 
 /* 음성 입력 중 임시 텍스트 스타일 */
@@ -564,4 +577,29 @@ body.dialogue-enabled.input-typing #dialogue-input-container {
 .option-btn.active {
   background: #4488cc !important;
   color: white !important;
+}
+
+/* --- Dev Controls --- */
+.dev-controls {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.dev-options {
+  display: none;
+  position: absolute;
+  bottom: calc(100% - 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(40, 40, 40, 0.95);
+  border-radius: 12px;
+  padding: 12px;
+  padding-bottom: 20px;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.dev-controls:hover .dev-options {
+  display: block;
 }

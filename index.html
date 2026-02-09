@@ -25,19 +25,17 @@
         <div id="dialogue-messages"></div>
       </div>
       <div id="dialogue-input-container">
-        <input type="text" id="dialogue-input" placeholder="메시지를 입력하세요... (Enter로 전송)" autocomplete="off">
-        <button id="clear-dialogue" title="모든 대화 지우기">✕</button>
+        <input type="text" id="dialogue-input" placeholder="Type a message... (Enter to send)" autocomplete="off">
+        <button id="clear-dialogue" title="Clear all messages">✕</button>
       </div>
     </div>
     <div id="controls">
-      <button id="toggle-debug">Show Landmarks</button>
-      <button id="toggle-view">Debug<br>OFF</button>
-      <button id="toggle-body">Body<br>OFF</button>
+      <!-- Screen/Recording 제어 -->
+      <button id="toggle-screen">Screen<br>OFF</button>
+      <button id="toggle-record" disabled>Record<br>OFF</button>
       <span class="divider">|</span>
-      <button id="select-screen">Select Screen</button>
-      <button id="stop-screen" disabled>Stop Screen</button>
-      <button id="toggle-avatar-size">Mini Avatar</button>
-      <button id="toggle-mic">Enable Mic</button>
+      <!-- 오디오 -->
+      <button id="toggle-mic">Mic<br>OFF</button>
       <div class="audio-controls">
         <div class="audio-meters">
           <div class="audio-meter" id="mic-meter" title="Microphone Level">
@@ -49,20 +47,39 @@
         </div>
         <input type="range" id="audio-mix-slider" min="0" max="100" value="50" title="Mic ← → Tab">
       </div>
-      <button id="start-record" disabled>Start Recording</button>
-      <button id="stop-record" disabled>Stop Recording</button>
+      <span class="divider">|</span>
+      <!-- 아바타 제어 -->
+      <button id="toggle-avatar-size">Avatar<br>Full</button>
+      <button id="toggle-body">Pose<br>OFF</button>
       <div class="dialogue-controls">
-        <button id="toggle-dialogue">대화<br>OFF</button>
+        <button id="toggle-dialogue">Talk<br>OFF</button>
         <div class="dialogue-options">
           <div class="option-group">
-            <span class="option-label">표시</span>
-            <button class="option-btn active" data-display="history">히스토리</button>
-            <button class="option-btn" data-display="single">단일</button>
+            <span class="option-label">Display</span>
+            <button class="option-btn" data-display="history">History</button>
+            <button class="option-btn active" data-display="single">Single</button>
           </div>
           <div class="option-group">
-            <span class="option-label">입력</span>
-            <button class="option-btn active" data-input="typing">타이핑</button>
-            <button class="option-btn" data-input="voice">음성</button>
+            <span class="option-label">Input</span>
+            <button class="option-btn" data-input="typing">Typing</button>
+            <button class="option-btn active" data-input="voice">Voice</button>
+          </div>
+        </div>
+      </div>
+      <span class="divider">|</span>
+      <!-- 개발자용 -->
+      <div class="dev-controls">
+        <button id="toggle-dev">Dev</button>
+        <div class="dev-options">
+          <div class="option-group">
+            <span class="option-label">Split</span>
+            <button class="option-btn" data-dev="debug-off">OFF</button>
+            <button class="option-btn active" data-dev="debug-on">ON</button>
+          </div>
+          <div class="option-group">
+            <span class="option-label">Landmarks</span>
+            <button class="option-btn active" data-dev="landmarks-off">OFF</button>
+            <button class="option-btn" data-dev="landmarks-on">ON</button>
           </div>
         </div>
       </div>

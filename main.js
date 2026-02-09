@@ -165,8 +165,8 @@ let detectedHands = {
 const MAX_VISIBLE_MESSAGES = 5;
 let dialogueMessages = [];
 let isDialogueEnabled = false;
-let dialogueDisplayMode = 'history'; // 'history' or 'single'
-let dialogueInputMode = 'typing';    // 'typing' or 'voice'
+let dialogueDisplayMode = 'single';  // 'history' or 'single'
+let dialogueInputMode = 'voice';     // 'typing' or 'voice'
 let speechRecognition = null;
 let currentInterimText = '';
 let messageTimeout = null;
@@ -541,7 +541,7 @@ function toggleDialogue() {
 
     const btn = document.getElementById('toggle-dialogue');
     if (btn) {
-        btn.innerHTML = isDialogueEnabled ? '대화<br>ON' : '대화<br>OFF';
+        btn.innerHTML = isDialogueEnabled ? 'Talk<br>ON' : 'Talk<br>OFF';
         btn.classList.toggle('dialogue-active', isDialogueEnabled);
     }
 
@@ -771,33 +771,41 @@ function setupDialogue() {
 
 // --- Initialization ---
 async function init() {
-    const toggleDebugBtn = document.getElementById('toggle-debug');
-    if (toggleDebugBtn) {
-        toggleDebugBtn.addEventListener('click', () => {
-            DEBUG_MODE = !DEBUG_MODE;
-            toggleDebugBtn.innerText = DEBUG_MODE ? "Hide Landmarks" : "Show Landmarks";
-            if (!DEBUG_MODE && debugCtx) {
-                debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+    // Dev dropdown menu handlers
+    document.querySelectorAll('.option-btn[data-dev]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const action = btn.dataset.dev;
+
+            if (action === 'debug-on') {
+                isDebugView = true;
+                updateDevOptions();
+                updateView();
+            } else if (action === 'debug-off') {
+                isDebugView = false;
+                updateDevOptions();
+                updateView();
+            } else if (action === 'landmarks-on') {
+                DEBUG_MODE = true;
+                updateDevOptions();
+            } else if (action === 'landmarks-off') {
+                DEBUG_MODE = false;
+                updateDevOptions();
+                if (debugCtx) {
+                    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+                }
             }
         });
-    }
+    });
 
     // 초기 view 상태 적용
     updateView();
-
-    const toggleBtn = document.getElementById('toggle-view');
-    if (toggleBtn) {
-        toggleBtn.addEventListener('click', () => {
-            isDebugView = !isDebugView;
-            updateView();
-        });
-    }
+    updateDevOptions();
 
     const toggleBodyBtn = document.getElementById('toggle-body');
     if (toggleBodyBtn) {
         toggleBodyBtn.addEventListener('click', () => {
             BODY_TRACKING_ENABLED = !BODY_TRACKING_ENABLED;
-            toggleBodyBtn.innerHTML = BODY_TRACKING_ENABLED ? "Body<br>ON" : "Body<br>OFF";
+            toggleBodyBtn.innerHTML = BODY_TRACKING_ENABLED ? "Pose<br>ON" : "Pose<br>OFF";
             // Body tracking 비활성화 시 팔 상태 리셋
             if (!BODY_TRACKING_ENABLED) {
                 leftArmActive = false;
@@ -854,18 +862,13 @@ async function init() {
 // Screen Capture & Recording
 // ============================================================
 function setupScreenCaptureControls() {
-    const selectScreenBtn = document.getElementById('select-screen');
-    const stopScreenBtn = document.getElementById('stop-screen');
+    const toggleScreenBtn = document.getElementById('toggle-screen');
     const toggleAvatarSizeBtn = document.getElementById('toggle-avatar-size');
     const toggleMicBtn = document.getElementById('toggle-mic');
-    const startRecordBtn = document.getElementById('start-record');
-    const stopRecordBtn = document.getElementById('stop-record');
+    const toggleRecordBtn = document.getElementById('toggle-record');
 
-    if (selectScreenBtn) {
-        selectScreenBtn.addEventListener('click', startScreenCapture);
-    }
-    if (stopScreenBtn) {
-        stopScreenBtn.addEventListener('click', stopScreenCapture);
+    if (toggleScreenBtn) {
+        toggleScreenBtn.addEventListener('click', toggleScreenCapture);
     }
     if (toggleAvatarSizeBtn) {
         toggleAvatarSizeBtn.addEventListener('click', toggleAvatarSize);
@@ -873,11 +876,8 @@ function setupScreenCaptureControls() {
     if (toggleMicBtn) {
         toggleMicBtn.addEventListener('click', toggleMicrophone);
     }
-    if (startRecordBtn) {
-        startRecordBtn.addEventListener('click', startRecording);
-    }
-    if (stopRecordBtn) {
-        stopRecordBtn.addEventListener('click', stopRecording);
+    if (toggleRecordBtn) {
+        toggleRecordBtn.addEventListener('click', toggleRecording);
     }
 
     // 오디오 믹스 슬라이더
@@ -920,7 +920,7 @@ async function toggleMicrophone() {
         isMicEnabled = false;
         micAnalyser = null;
         if (btn) {
-            btn.innerText = 'Enable Mic';
+            btn.innerHTML = 'Mic<br>OFF';
             btn.classList.remove('mic-active');
         }
         if (micMeter) {
@@ -933,7 +933,7 @@ async function toggleMicrophone() {
             micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             isMicEnabled = true;
             if (btn) {
-                btn.innerText = 'Disable Mic';
+                btn.innerHTML = 'Mic<br>ON';
                 btn.classList.add('mic-active');
             }
             if (micMeter) {
@@ -1070,7 +1070,7 @@ function toggleAvatarSize() {
     const sceneWrapper = document.getElementById('scene-wrapper');
 
     if (btn) {
-        btn.innerText = isMiniAvatar ? 'Full Avatar' : 'Mini Avatar';
+        btn.innerHTML = isMiniAvatar ? 'Avatar<br>Mini' : 'Avatar<br>Full';
     }
 
     if (isMiniAvatar) {
@@ -1221,6 +1221,11 @@ async function startScreenCapture() {
         // 카메라 프리뷰 숨기기 & 화면 공유 모드 활성화
         document.body.classList.add('screen-sharing');
 
+        // 기본 Mini Avatar 모드로 전환
+        if (!isMiniAvatar) {
+            toggleAvatarSize();
+        }
+
         // 버튼 상태 업데이트
         updateScreenCaptureButtons(true);
 
@@ -1265,7 +1270,7 @@ function stopScreenCapture() {
         isMiniAvatar = false;
         document.body.classList.remove('mini-avatar');
         const btn = document.getElementById('toggle-avatar-size');
-        if (btn) btn.innerText = 'Mini Avatar';
+        if (btn) btn.innerHTML = 'Avatar<br>Full';
 
         const sceneWrapper = document.getElementById('scene-wrapper');
         if (sceneWrapper) {
@@ -1445,15 +1450,10 @@ function startRecording() {
     document.body.classList.add('recording');
 
     // 버튼 상태 업데이트
-    const startBtn = document.getElementById('start-record');
-    const stopBtn = document.getElementById('stop-record');
-    if (startBtn) {
-        startBtn.disabled = true;
-        startBtn.classList.remove('recording');
-    }
-    if (stopBtn) {
-        stopBtn.disabled = false;
-        stopBtn.classList.add('recording');
+    const toggleRecordBtn = document.getElementById('toggle-record');
+    if (toggleRecordBtn) {
+        toggleRecordBtn.innerHTML = 'Record<br>ON';
+        toggleRecordBtn.classList.add('recording');
     }
 }
 
@@ -1466,14 +1466,10 @@ function stopRecording() {
     document.body.classList.remove('recording');
 
     // 버튼 상태 업데이트
-    const startBtn = document.getElementById('start-record');
-    const stopBtn = document.getElementById('stop-record');
-    if (startBtn && screenStream) {
-        startBtn.disabled = false;
-    }
-    if (stopBtn) {
-        stopBtn.disabled = true;
-        stopBtn.classList.remove('recording');
+    const toggleRecordBtn = document.getElementById('toggle-record');
+    if (toggleRecordBtn) {
+        toggleRecordBtn.innerHTML = 'Record<br>OFF';
+        toggleRecordBtn.classList.remove('recording');
     }
 }
 
@@ -1495,26 +1491,64 @@ function downloadRecording() {
 }
 
 function updateScreenCaptureButtons(isCapturing) {
-    const selectBtn = document.getElementById('select-screen');
-    const stopBtn = document.getElementById('stop-screen');
-    const startRecordBtn = document.getElementById('start-record');
-    const stopRecordBtn = document.getElementById('stop-record');
+    const toggleScreenBtn = document.getElementById('toggle-screen');
+    const toggleRecordBtn = document.getElementById('toggle-record');
 
-    if (selectBtn) selectBtn.disabled = isCapturing;
-    if (stopBtn) stopBtn.disabled = !isCapturing;
-    if (startRecordBtn) startRecordBtn.disabled = !isCapturing;
-    if (stopRecordBtn) stopRecordBtn.disabled = true;
+    if (toggleScreenBtn) {
+        toggleScreenBtn.innerHTML = isCapturing ? 'Screen<br>ON' : 'Screen<br>OFF';
+        if (isCapturing) {
+            toggleScreenBtn.classList.add('mic-active');
+        } else {
+            toggleScreenBtn.classList.remove('mic-active');
+        }
+    }
+    if (toggleRecordBtn) {
+        toggleRecordBtn.disabled = !isCapturing;
+    }
+}
+
+// Screen capture toggle
+function toggleScreenCapture() {
+    if (screenStream) {
+        stopScreenCapture();
+    } else {
+        startScreenCapture();
+    }
+}
+
+// Recording toggle
+function toggleRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        stopRecording();
+    } else {
+        startRecording();
+    }
 }
 
 function updateView() {
-    const btn = document.getElementById('toggle-view');
     if (isDebugView) {
         document.body.classList.add('debug-view');
-        if (btn) btn.innerHTML = 'Debug<br>ON';
     } else {
         document.body.classList.remove('debug-view');
-        if (btn) btn.innerHTML = 'Debug<br>OFF';
     }
+}
+
+function updateDevOptions() {
+    // Update Debug option buttons
+    document.querySelectorAll('.option-btn[data-dev="debug-on"]').forEach(btn => {
+        btn.classList.toggle('active', isDebugView);
+    });
+    document.querySelectorAll('.option-btn[data-dev="debug-off"]').forEach(btn => {
+        btn.classList.toggle('active', !isDebugView);
+    });
+
+    // Update Landmarks option buttons
+    document.querySelectorAll('.option-btn[data-dev="landmarks-on"]').forEach(btn => {
+        btn.classList.toggle('active', DEBUG_MODE);
+    });
+    document.querySelectorAll('.option-btn[data-dev="landmarks-off"]').forEach(btn => {
+        btn.classList.toggle('active', !DEBUG_MODE);
+    });
 }
 
 function setupScene(canvas) {
