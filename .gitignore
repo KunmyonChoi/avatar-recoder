@@ -22,3 +22,16 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# AI assistant folders
+.claude
+.cursor
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Recordings (if saved locally)
+*.webm
+*.mp4

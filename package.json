@@ -1,13 +1,35 @@
 {
   "name": "prismic-eagle",
-  "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Real-time 3D VRM avatar with MediaPipe face, body, and hand tracking",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
+  "keywords": [
+    "mediapipe",
+    "vrm",
+    "avatar",
+    "face-tracking",
+    "body-tracking",
+    "hand-tracking",
+    "three.js",
+    "webgl",
+    "screen-capture",
+    "video-recording"
+  ],
+  "author": "Kunmyon Choi <dilly97@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/prismic-eagle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/prismic-eagle/issues"
+  },
+  "homepage": "https://github.com/yourusername/prismic-eagle#readme",
   "devDependencies": {
     "vite": "^7.2.4"
   },
