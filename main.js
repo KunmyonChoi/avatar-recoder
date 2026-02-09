@@ -161,8 +161,17 @@ let detectedHands = {
     right: null   // MediaPipe Right Hand → Avatar Left
 };
 
-// --- Chat Overlay ---
+// --- Unified Dialogue System ---
 const MAX_VISIBLE_MESSAGES = 5;
+let dialogueMessages = [];
+let isDialogueEnabled = false;
+let dialogueDisplayMode = 'history'; // 'history' or 'single'
+let dialogueInputMode = 'typing';    // 'typing' or 'voice'
+let speechRecognition = null;
+let currentInterimText = '';
+let messageTimeout = null;
+
+// Legacy aliases for compatibility
 let chatMessages = [];
 let isChatEnabled = false;
 
@@ -363,7 +372,6 @@ function updateCaptionOverlayPosition() {
 
 // --- Speech-to-Text Captions ---
 let isCaptionsEnabled = false;
-let speechRecognition = null;
 let currentCaption = '';
 let captionTimeout = null;
 
@@ -393,28 +401,11 @@ function initSpeechRecognition() {
             }
         }
 
-        // Update caption display
-        const captionEl = document.getElementById('caption-text');
-        if (captionEl) {
-            if (finalTranscript) {
-                captionEl.textContent = finalTranscript;
-                captionEl.classList.remove('interim');
-                currentCaption = finalTranscript;
-
-                // Clear caption after delay
-                clearTimeout(captionTimeout);
-                captionTimeout = setTimeout(() => {
-                    captionEl.textContent = '';
-                    currentCaption = '';
-                }, 4000);
-            } else if (interimTranscript) {
-                captionEl.textContent = interimTranscript;
-                captionEl.classList.add('interim');
-                currentCaption = interimTranscript;
-
-                // Reset timeout while speaking
-                clearTimeout(captionTimeout);
-            }
+        // Update dialogue display (unified system)
+        if (finalTranscript) {
+            addDialogueMessage(finalTranscript, false);
+        } else if (interimTranscript) {
+            addDialogueMessage(interimTranscript, true);
         }
     };
 
@@ -544,6 +535,240 @@ function setupCaptionsButton() {
     }
 }
 
+// --- Unified Dialogue Setup ---
+function toggleDialogue() {
+    isDialogueEnabled = !isDialogueEnabled;
+
+    const btn = document.getElementById('toggle-dialogue');
+    if (btn) {
+        btn.innerHTML = isDialogueEnabled ? '대화<br>ON' : '대화<br>OFF';
+        btn.classList.toggle('dialogue-active', isDialogueEnabled);
+    }
+
+    document.body.classList.toggle('dialogue-enabled', isDialogueEnabled);
+
+    if (isDialogueEnabled) {
+        document.body.classList.add('display-' + dialogueDisplayMode);
+        document.body.classList.add('input-' + dialogueInputMode);
+
+        if (dialogueInputMode === 'typing') {
+            const input = document.getElementById('dialogue-input');
+            if (input) setTimeout(() => input.focus(), 100);
+        } else if (dialogueInputMode === 'voice') {
+            startCaptions(); // Use existing speech recognition
+        }
+    } else {
+        stopCaptions();
+        // Clear messages
+        const container = document.getElementById('dialogue-messages');
+        if (container) container.innerHTML = '';
+        dialogueMessages = [];
+    }
+}
+
+function addDialogueMessage(text, isInterim = false) {
+    if (!text.trim()) return;
+
+    const container = document.getElementById('dialogue-messages');
+    if (!container) return;
+
+    // 단일 모드: 기존 요소 재사용 (애니메이션 방지)
+    if (dialogueDisplayMode === 'single') {
+        let msgEl = container.querySelector('.dialogue-message');
+        if (!msgEl) {
+            msgEl = document.createElement('div');
+            msgEl.className = 'dialogue-message';
+            container.appendChild(msgEl);
+            dialogueMessages = [msgEl];
+        }
+        msgEl.textContent = text;
+        msgEl.classList.toggle('interim', isInterim);
+
+        // 확정 메시지면 자동 사라짐 타이머 설정
+        if (!isInterim) {
+            clearTimeout(messageTimeout);
+            messageTimeout = setTimeout(() => {
+                msgEl.textContent = '';
+            }, 4000);
+        }
+        return;
+    }
+
+    // 히스토리 모드: 기존 로직
+    // 임시 메시지 처리
+    if (isInterim) {
+        const existing = container.querySelector('.interim');
+        if (existing) {
+            existing.textContent = text;
+            return;
+        }
+    } else {
+        const existing = container.querySelector('.interim');
+        if (existing) existing.remove();
+        dialogueMessages = dialogueMessages.filter(m => !m.classList.contains('interim'));
+    }
+
+    const msgEl = document.createElement('div');
+    msgEl.className = 'dialogue-message' + (isInterim ? ' interim' : '');
+    msgEl.textContent = text;
+    container.appendChild(msgEl);
+    dialogueMessages.push(msgEl);
+
+    // 오래된 메시지 제거
+    while (dialogueMessages.length > MAX_VISIBLE_MESSAGES + 1) {
+        const old = dialogueMessages.shift();
+        old.remove();
+    }
+}
+
+function setDialogueDisplayMode(mode) {
+    dialogueDisplayMode = mode;
+    document.body.classList.remove('display-history', 'display-single');
+    document.body.classList.add('display-' + mode);
+
+    document.querySelectorAll('.option-btn[data-display]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.display === mode);
+    });
+
+    // 모드 변경 시 초기화
+    const container = document.getElementById('dialogue-messages');
+    if (container) container.innerHTML = '';
+    dialogueMessages = [];
+}
+
+function setDialogueInputMode(mode) {
+    const prevMode = dialogueInputMode;
+    dialogueInputMode = mode;
+    document.body.classList.remove('input-typing', 'input-voice');
+    document.body.classList.add('input-' + mode);
+
+    document.querySelectorAll('.option-btn[data-input]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.input === mode);
+    });
+
+    if (isDialogueEnabled) {
+        if (prevMode === 'voice' && mode === 'typing') {
+            stopCaptions();
+        } else if (prevMode === 'typing' && mode === 'voice') {
+            startCaptions();
+        }
+    }
+}
+
+function updateDialogueOverlayPosition() {
+    const overlay = document.getElementById('dialogue-overlay');
+    if (!overlay) return;
+
+    if (isMiniAvatar && miniAvatarPosition.x !== null) {
+        const avatarWidth = 300;
+        overlay.style.left = (miniAvatarPosition.x + avatarWidth / 2 - 150) + 'px';
+        overlay.style.top = (miniAvatarPosition.y + 220) + 'px';
+    } else {
+        overlay.style.left = '';
+        overlay.style.top = '';
+    }
+}
+
+function drawDialogueToCanvas(ctx, canvasWidth, canvasHeight) {
+    if (dialogueMessages.length === 0) return;
+
+    const fontSize = isMiniAvatar ? 16 : 22;
+    const padding = isMiniAvatar ? 8 : 12;
+    const lineHeight = fontSize + padding * 2 + 6;
+    const maxWidth = isMiniAvatar ? 280 : 500;
+
+    let centerX, baseY;
+    if (isMiniAvatar && miniAvatarPosition.x !== null) {
+        const scaleX = canvasWidth / window.innerWidth;
+        const scaleY = canvasHeight / window.innerHeight;
+        centerX = (miniAvatarPosition.x * scaleX) + 150 * scaleX;
+        baseY = (miniAvatarPosition.y * scaleY) + 250 * scaleY;
+    } else {
+        centerX = canvasWidth / 2;
+        baseY = canvasHeight * 0.82;
+    }
+
+    ctx.font = `500 ${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const visible = dialogueDisplayMode === 'single'
+        ? dialogueMessages.slice(-1)
+        : dialogueMessages.slice(-MAX_VISIBLE_MESSAGES);
+
+    visible.forEach((msgEl, index) => {
+        const age = visible.length - 1 - index;
+        const text = msgEl.textContent;
+        const y = baseY - (age * lineHeight);
+        const isInterim = msgEl.classList.contains('interim');
+
+        let alpha = dialogueDisplayMode === 'single' ? 1 : Math.max(1 - (age * 0.2), 0.1);
+        if (isInterim) alpha *= 0.7;
+
+        const textWidth = Math.min(ctx.measureText(text).width + padding * 2, maxWidth);
+        const bgX = centerX - textWidth / 2;
+        const bgY = y - fontSize / 2 - padding;
+        const bgHeight = fontSize + padding * 2;
+
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.7 * alpha})`;
+        ctx.beginPath();
+        ctx.roundRect(bgX, bgY, textWidth, bgHeight, 12);
+        ctx.fill();
+
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.fillText(text, centerX, y, maxWidth - padding * 2);
+    });
+}
+
+function setupDialogue() {
+    // Toggle button
+    const toggleBtn = document.getElementById('toggle-dialogue');
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', toggleDialogue);
+    }
+
+    // Input field
+    const input = document.getElementById('dialogue-input');
+    if (input) {
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.isComposing) {
+                e.preventDefault();
+                if (input.value.trim()) {
+                    addDialogueMessage(input.value);
+                    input.value = '';
+                }
+            }
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                input.blur();
+            }
+        });
+        input.addEventListener('keyup', (e) => e.stopPropagation());
+    }
+
+    // Clear button
+    const clearBtn = document.getElementById('clear-dialogue');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            const container = document.getElementById('dialogue-messages');
+            if (container) container.innerHTML = '';
+            dialogueMessages = [];
+        });
+    }
+
+    // Option buttons
+    document.querySelectorAll('.option-btn[data-display]').forEach(btn => {
+        btn.addEventListener('click', () => setDialogueDisplayMode(btn.dataset.display));
+    });
+    document.querySelectorAll('.option-btn[data-input]').forEach(btn => {
+        btn.addEventListener('click', () => setDialogueInputMode(btn.dataset.input));
+    });
+
+    // 기본 모드 설정
+    document.body.classList.add('display-' + dialogueDisplayMode);
+    document.body.classList.add('input-' + dialogueInputMode);
+}
+
 // --- Initialization ---
 async function init() {
     const toggleDebugBtn = document.getElementById('toggle-debug');
@@ -592,11 +817,8 @@ async function init() {
     // Screen capture & recording buttons
     setupScreenCaptureControls();
 
-    // Chat overlay
-    setupChatInput();
-
-    // Speech-to-text captions
-    setupCaptionsButton();
+    // Unified dialogue system
+    setupDialogue();
 
     // 키보드 단축키: Escape로 녹화 중지
     document.addEventListener('keydown', (e) => {
@@ -877,9 +1099,8 @@ function toggleAvatarSize() {
         }
     }
 
-    // 채팅/캡션 오버레이 위치 업데이트
-    updateChatOverlayPosition();
-    updateCaptionOverlayPosition();
+    // 대화 오버레이 위치 업데이트
+    updateDialogueOverlayPosition();
 
     // 렌더러 크기 업데이트
     setTimeout(() => {
@@ -956,9 +1177,8 @@ function onDragMove(e) {
     miniAvatarPosition.x = newX;
     miniAvatarPosition.y = newY;
 
-    // 채팅/캡션 오버레이 위치 업데이트
-    updateChatOverlayPosition();
-    updateCaptionOverlayPosition();
+    // 대화 오버레이 위치 업데이트
+    updateDialogueOverlayPosition();
 
     e.preventDefault();
 }
@@ -1139,11 +1359,8 @@ function startRecording() {
             compositeCtx.drawImage(avatarCanvas, 0, 0, compositeCanvas.width, compositeCanvas.height);
         }
 
-        // 3. 채팅 메시지 그리기
-        drawChatMessagesToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
-
-        // 4. 음성 자막 그리기
-        drawCaptionToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
+        // 3. 대화 메시지 그리기
+        drawDialogueToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
 
         compositeAnimationId = requestAnimationFrame(compositeFrame);
     }
@@ -1293,10 +1510,10 @@ function updateView() {
     const btn = document.getElementById('toggle-view');
     if (isDebugView) {
         document.body.classList.add('debug-view');
-        if (btn) btn.innerText = 'Switch to Default';
+        if (btn) btn.innerHTML = 'Debug<br>ON';
     } else {
         document.body.classList.remove('debug-view');
-        if (btn) btn.innerText = 'Switch to Debug';
+        if (btn) btn.innerHTML = 'Debug<br>OFF';
     }
 }
 

@@ -145,12 +145,19 @@ body.debug-view #scene-wrapper {
   transform: none;
 }
 
-/* Body Tracking 버튼 2줄 표시 */
-#toggle-body {
-  width: 70px;
-  line-height: 1.2;
-  padding: 8px 10px;
+/* 2줄 버튼 스타일 */
+#toggle-view,
+#toggle-body,
+#toggle-dialogue {
+  min-width: 70px;
+  line-height: 1.3;
+  padding: 8px 12px;
   font-size: 14px;
+  text-align: center;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
 #controls .divider {
@@ -339,48 +346,53 @@ body.recording #audio-mix-slider {
   width: 124px;
 }
 
-/* --- Chat Overlay --- */
-#chat-overlay {
+/* --- Dialogue Overlay (unified chat/caption) --- */
+#dialogue-overlay {
   display: none;
   position: absolute;
   width: 400px;
-  height: 200px;
   z-index: 18;
   pointer-events: none;
   overflow: hidden;
-  /* 기본 위치 (Full Avatar 모드) - 입력창 바로 위 */
   bottom: 140px;
   left: 50%;
   transform: translateX(-50%);
 }
 
-body.chat-enabled #chat-overlay {
+body.dialogue-enabled #dialogue-overlay {
   display: block;
 }
 
-/* Mini Avatar 모드에서는 JS로 위치 제어 */
-body.mini-avatar #chat-overlay {
+/* 히스토리 모드: 여러 메시지 표시 */
+body.dialogue-enabled.display-history #dialogue-overlay {
+  height: 200px;
+}
+
+/* 단일 모드: 하나만 표시 */
+body.dialogue-enabled.display-single #dialogue-overlay {
+  height: auto;
+}
+
+/* Mini Avatar 모드 */
+body.mini-avatar #dialogue-overlay {
   bottom: auto;
   left: auto;
   transform: none;
   width: 300px;
+}
+
+body.mini-avatar.display-history #dialogue-overlay {
   height: 150px;
 }
 
-body.mini-avatar .chat-message {
-  font-size: 13px;
-  padding: 6px 10px;
-  margin-bottom: 4px;
-}
-
-#chat-messages {
+#dialogue-messages {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   height: 100%;
 }
 
-.chat-message {
+.dialogue-message {
   background: rgba(0, 0, 0, 0.7);
   color: white;
   padding: 10px 16px;
@@ -389,20 +401,37 @@ body.mini-avatar .chat-message {
   font-size: 16px;
   font-weight: 500;
   text-align: center;
-  animation: chatFadeIn 0.3s ease-out;
+  animation: dialogueFadeIn 0.3s ease-out;
   transition: opacity 0.3s ease, transform 0.3s ease;
   text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
 }
 
-/* 메시지 나이에 따른 흐려짐 효과 (nth-last-child로 제어, 마지막이 최신) */
-.chat-message:nth-last-child(1) { opacity: 1; }
-.chat-message:nth-last-child(2) { opacity: 0.8; }
-.chat-message:nth-last-child(3) { opacity: 0.6; }
-.chat-message:nth-last-child(4) { opacity: 0.4; }
-.chat-message:nth-last-child(5) { opacity: 0.2; }
-.chat-message:nth-last-child(n+6) { opacity: 0.1; }
+body.mini-avatar .dialogue-message {
+  font-size: 13px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+}
 
-@keyframes chatFadeIn {
+/* 히스토리 모드: 메시지 나이에 따른 흐려짐 */
+body.display-history .dialogue-message:nth-last-child(1) { opacity: 1; }
+body.display-history .dialogue-message:nth-last-child(2) { opacity: 0.8; }
+body.display-history .dialogue-message:nth-last-child(3) { opacity: 0.6; }
+body.display-history .dialogue-message:nth-last-child(4) { opacity: 0.4; }
+body.display-history .dialogue-message:nth-last-child(5) { opacity: 0.2; }
+body.display-history .dialogue-message:nth-last-child(n+6) { opacity: 0.1; }
+
+/* 단일 모드: 항상 완전 불투명, 애니메이션 없음 */
+body.display-single .dialogue-message {
+  opacity: 1;
+  animation: none;
+}
+
+/* 음성 입력 중 임시 텍스트 스타일 */
+.dialogue-message.interim {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+@keyframes dialogueFadeIn {
   from {
     opacity: 0;
     transform: translateY(20px);
@@ -413,8 +442,8 @@ body.mini-avatar .chat-message {
   }
 }
 
-/* Chat Input */
-#chat-input-container {
+/* Dialogue Input */
+#dialogue-input-container {
   display: none;
   position: absolute;
   bottom: 80px;
@@ -425,21 +454,12 @@ body.mini-avatar .chat-message {
   gap: 8px;
 }
 
-body.chat-enabled #chat-input-container {
+/* 타이핑 모드일 때만 입력창 표시 */
+body.dialogue-enabled.input-typing #dialogue-input-container {
   display: flex;
 }
 
-body:not(.chat-enabled) #chat-overlay,
-body:not(.chat-enabled) #chat-input-container {
-  display: none;
-}
-
-#toggle-chat.chat-active {
-  background: #4488cc;
-  color: white;
-}
-
-#clear-chat {
+#clear-dialogue {
   width: 36px;
   height: 36px;
   border: none;
@@ -453,12 +473,12 @@ body:not(.chat-enabled) #chat-input-container {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-#clear-chat:hover {
+#clear-dialogue:hover {
   background: rgba(255, 50, 50, 1);
   transform: scale(1.1);
 }
 
-#chat-input {
+#dialogue-input {
   width: 400px;
   padding: 12px 20px;
   font-size: 16px;
@@ -470,82 +490,78 @@ body:not(.chat-enabled) #chat-input-container {
   transition: all 0.2s ease;
 }
 
-#chat-input:focus {
+#dialogue-input:focus {
   background: white;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
 }
 
-#chat-input::placeholder {
+#dialogue-input::placeholder {
   color: #999;
 }
 
-/* --- Caption Overlay (Speech-to-Text) --- */
-#caption-overlay {
-  display: none;
-  position: absolute;
-  bottom: 140px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 80%;
-  max-width: 800px;
-  z-index: 17;
-  pointer-events: none;
-  text-align: center;
+/* --- Dialogue Controls --- */
+.dialogue-controls {
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
-body.captions-enabled #caption-overlay {
+#toggle-dialogue.dialogue-active {
+  background: #4488cc;
+  color: white;
+}
+
+.dialogue-options {
+  display: none;
+  position: absolute;
+  bottom: calc(100% - 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(40, 40, 40, 0.95);
+  border-radius: 12px;
+  padding: 12px;
+  padding-bottom: 20px;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.dialogue-controls:hover .dialogue-options {
   display: block;
 }
 
-/* Mini Avatar 모드에서 자막 위치 조정 - JS로 위치 제어 */
-body.mini-avatar #caption-overlay {
-  bottom: auto;
-  left: auto;
-  transform: none;
-  width: 300px;
-  max-width: 300px;
+.option-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
-#caption-text {
-  display: inline-block;
-  background: rgba(0, 0, 0, 0.8);
-  color: white;
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.4;
-  text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.8);
-  max-width: 100%;
-  word-wrap: break-word;
-  animation: captionFadeIn 0.2s ease-out;
+.option-group:last-child {
+  margin-bottom: 0;
 }
 
-body.mini-avatar #caption-text {
-  font-size: 16px;
-  padding: 8px 16px;
-}
-
-#caption-text:empty {
-  display: none;
-}
-
-#caption-text.interim {
+.option-label {
   color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  min-width: 30px;
 }
 
-@keyframes captionFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.option-btn {
+  padding: 6px 12px !important;
+  font-size: 12px !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: white !important;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-#toggle-captions.captions-active {
-  background: #cc8844;
-  color: white;
+.option-btn:hover {
+  background: rgba(255, 255, 255, 0.3) !important;
+}
+
+.option-btn.active {
+  background: #4488cc !important;
+  color: white !important;
 }

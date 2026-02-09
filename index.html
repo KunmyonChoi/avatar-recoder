@@ -20,22 +20,18 @@
       <div id="scene-wrapper">
         <canvas id="output_canvas"></canvas>
       </div>
-      <!-- Chat Overlay -->
-      <div id="chat-overlay">
-        <div id="chat-messages"></div>
+      <!-- Dialogue Overlay (unified chat/caption) -->
+      <div id="dialogue-overlay">
+        <div id="dialogue-messages"></div>
       </div>
-      <!-- Caption Overlay (Speech-to-Text) -->
-      <div id="caption-overlay">
-        <div id="caption-text"></div>
-      </div>
-      <div id="chat-input-container">
-        <input type="text" id="chat-input" placeholder="메시지를 입력하세요... (Enter로 전송)" autocomplete="off">
-        <button id="clear-chat" title="모든 채팅 지우기">✕</button>
+      <div id="dialogue-input-container">
+        <input type="text" id="dialogue-input" placeholder="메시지를 입력하세요... (Enter로 전송)" autocomplete="off">
+        <button id="clear-dialogue" title="모든 대화 지우기">✕</button>
       </div>
     </div>
     <div id="controls">
       <button id="toggle-debug">Show Landmarks</button>
-      <button id="toggle-view">Switch to Debug</button>
+      <button id="toggle-view">Debug<br>OFF</button>
       <button id="toggle-body">Body<br>OFF</button>
       <span class="divider">|</span>
       <button id="select-screen">Select Screen</button>
@@ -55,8 +51,21 @@
       </div>
       <button id="start-record" disabled>Start Recording</button>
       <button id="stop-record" disabled>Stop Recording</button>
-      <button id="toggle-chat">Chat ON</button>
-      <button id="toggle-captions">Captions ON</button>
+      <div class="dialogue-controls">
+        <button id="toggle-dialogue">대화<br>OFF</button>
+        <div class="dialogue-options">
+          <div class="option-group">
+            <span class="option-label">표시</span>
+            <button class="option-btn active" data-display="history">히스토리</button>
+            <button class="option-btn" data-display="single">단일</button>
+          </div>
+          <div class="option-group">
+            <span class="option-label">입력</span>
+            <button class="option-btn active" data-input="typing">타이핑</button>
+            <button class="option-btn" data-input="voice">음성</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
   <script type="module" src="./main.js"></script>
