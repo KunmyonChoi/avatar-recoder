@@ -12,6 +12,7 @@
 <body>
   <div id="container">
     <div id="preview-container">
+      <video id="screen-background" autoplay playsinline muted></video>
       <div id="camera-wrapper">
         <video id="webcam" autoplay playsinline></video>
         <canvas id="debug_canvas"></canvas>
@@ -21,7 +22,27 @@
       </div>
     </div>
     <div id="controls">
-      <button id="toggle-view">Switch View</button>
+      <button id="toggle-debug">Show Landmarks</button>
+      <button id="toggle-view">Switch to Debug</button>
+      <button id="toggle-body">Enable Body Tracking</button>
+      <span class="divider">|</span>
+      <button id="select-screen">Select Screen</button>
+      <button id="stop-screen" disabled>Stop Screen</button>
+      <button id="toggle-avatar-size" disabled>Mini Avatar</button>
+      <button id="toggle-mic">Enable Mic</button>
+      <div class="audio-controls">
+        <div class="audio-meters">
+          <div class="audio-meter" id="mic-meter" title="Microphone Level">
+            <div class="audio-meter-bar"></div>
+          </div>
+          <div class="audio-meter" id="tab-meter" title="Tab Audio Level">
+            <div class="audio-meter-bar"></div>
+          </div>
+        </div>
+        <input type="range" id="audio-mix-slider" min="0" max="100" value="50" title="Mic ← → Tab">
+      </div>
+      <button id="start-record" disabled>Start Recording</button>
+      <button id="stop-record" disabled>Stop Recording</button>
     </div>
   </div>
   <script type="module" src="./main.js"></script>
