@@ -29,8 +29,8 @@ https://github.com/user-attachments/assets/demo.mp4
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/prismic-eagle.git
-cd prismic-eagle
+git clone https://github.com/KunmyonChoi/avatar-recoder.git
+cd avatar-recoder
 
 # Install dependencies
 npm install
