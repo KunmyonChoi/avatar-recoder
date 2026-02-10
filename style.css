@@ -151,6 +151,7 @@ body.debug-view #scene-wrapper {
 #toggle-body,
 #toggle-dialogue,
 #toggle-mic,
+#toggle-camera,
 #toggle-avatar-size,
 #toggle-screen,
 #toggle-record {
@@ -178,7 +179,8 @@ body.debug-view #scene-wrapper {
   animation: pulse 1s infinite;
 }
 
-#controls button.mic-active {
+#controls button.mic-active,
+#controls button.camera-active {
   background: #44aa44;
   color: white;
 }

@@ -125,6 +125,8 @@ let debugCanvas, debugCtx, drawingUtils;
 let DEBUG_MODE = false;              // 기본: Hide landmarks
 let isDebugView = false;             // 기본: Default mode
 let BODY_TRACKING_ENABLED = false;   // 기본: Face tracking만
+let isCameraEnabled = true;          // 카메라 상태 (기본: ON)
+let webcamStream = null;             // 웹캠 스트림
 
 // --- Screen Capture & Recording ---
 let screenStream = null;             // 화면 공유 스트림
@@ -411,20 +413,40 @@ function initSpeechRecognition() {
 
     speechRecognition.onerror = (event) => {
         console.error('Speech recognition error:', event.error);
-        if (event.error === 'not-allowed') {
-            alert('마이크 권한이 필요합니다. 브라우저 설정에서 마이크 권한을 허용해주세요.');
-            stopCaptions();
+        switch (event.error) {
+            case 'not-allowed':
+                alert('마이크 권한이 필요합니다. 브라우저 설정에서 마이크 권한을 허용해주세요.');
+                stopCaptions();
+                break;
+            case 'audio-capture':
+                console.warn('[Captions] Microphone is being used by another application');
+                // 자동 재시도는 onend에서 처리됨
+                break;
+            case 'network':
+                console.warn('[Captions] Network error, will retry...');
+                // 자동 재시도는 onend에서 처리됨
+                break;
+            case 'aborted':
+                console.log('[Captions] Recognition aborted');
+                break;
+            default:
+                console.warn('[Captions] Unhandled error:', event.error);
         }
     };
 
     speechRecognition.onend = () => {
-        // Restart if still enabled (continuous mode can stop unexpectedly)
-        if (isCaptionsEnabled) {
+        // Restart if still enabled AND mic is on (continuous mode can stop unexpectedly)
+        if (isCaptionsEnabled && isMicEnabled) {
             try {
                 speechRecognition.start();
             } catch (e) {
                 console.warn('Failed to restart speech recognition:', e);
             }
+        } else if (isCaptionsEnabled && !isMicEnabled) {
+            // Mic이 꺼졌으면 캡션도 중지
+            console.log('[Captions] Mic turned off, stopping captions');
+            isCaptionsEnabled = false;
+            document.body.classList.remove('captions-enabled');
         }
     };
 
@@ -432,6 +454,18 @@ function initSpeechRecognition() {
 }
 
 function startCaptions() {
+    // 이미 실행 중이면 무시
+    if (isCaptionsEnabled) {
+        console.log('[Captions] Already running, skipping...');
+        return;
+    }
+
+    // Mic이 꺼져있으면 시작하지 않음
+    if (!isMicEnabled) {
+        console.log('[Captions] Mic is OFF, cannot start speech recognition');
+        return;
+    }
+
     if (!speechRecognition && !initSpeechRecognition()) {
         alert('이 브라우저는 음성 인식을 지원하지 않습니다.');
         return;
@@ -447,6 +481,7 @@ function startCaptions() {
             btn.textContent = 'Captions OFF';
             btn.classList.add('captions-active');
         }
+        console.log('[Captions] Started');
     } catch (e) {
         console.error('Failed to start speech recognition:', e);
     }
@@ -555,7 +590,7 @@ function toggleDialogue() {
             const input = document.getElementById('dialogue-input');
             if (input) setTimeout(() => input.focus(), 100);
         } else if (dialogueInputMode === 'voice') {
-            startCaptions(); // Use existing speech recognition
+            startCaptions();
         }
     } else {
         stopCaptions();
@@ -855,6 +890,20 @@ async function init() {
     setupMediaPipe();
     loadAvatar();
 
+    // 탭 전환/최소화 시 처리
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            console.log('[App] Tab hidden');
+            // 녹화 중이 아니면 리소스 절약 가능 (현재는 로그만)
+        } else {
+            console.log('[App] Tab visible');
+            // AudioContext가 suspended 상태일 수 있으므로 resume
+            if (meterAudioContext && meterAudioContext.state === 'suspended') {
+                meterAudioContext.resume();
+            }
+        }
+    });
+
     animate();
 }
 
@@ -866,6 +915,7 @@ function setupScreenCaptureControls() {
     const toggleAvatarSizeBtn = document.getElementById('toggle-avatar-size');
     const toggleMicBtn = document.getElementById('toggle-mic');
     const toggleRecordBtn = document.getElementById('toggle-record');
+    const toggleCameraBtn = document.getElementById('toggle-camera');
 
     if (toggleScreenBtn) {
         toggleScreenBtn.addEventListener('click', toggleScreenCapture);
@@ -878,6 +928,9 @@ function setupScreenCaptureControls() {
     }
     if (toggleRecordBtn) {
         toggleRecordBtn.addEventListener('click', toggleRecording);
+    }
+    if (toggleCameraBtn) {
+        toggleCameraBtn.addEventListener('click', toggleCamera);
     }
 
     // 오디오 믹스 슬라이더
@@ -906,13 +959,33 @@ function updateAudioMix() {
 
 }
 
+// 마이크 토글 중복 방지 플래그
+let isMicToggling = false;
+
 // 마이크 토글
 async function toggleMicrophone() {
+    // 중복 호출 방지
+    if (isMicToggling) {
+        console.log('[Mic] Already toggling, skipping...');
+        return;
+    }
+    isMicToggling = true;
+
+    console.log('[Mic] toggleMicrophone called, current state:', isMicEnabled);
     const btn = document.getElementById('toggle-mic');
     const micMeter = document.getElementById('mic-meter');
 
+    try {
     if (isMicEnabled) {
         // 마이크 비활성화
+        console.log('[Mic] Disabling microphone...');
+
+        // 음성 인식이 실행 중이면 중지
+        if (isCaptionsEnabled) {
+            console.log('[Mic] Stopping captions due to mic off');
+            stopCaptions();
+        }
+
         if (micStream) {
             micStream.getTracks().forEach(track => track.stop());
             micStream = null;
@@ -927,10 +1000,36 @@ async function toggleMicrophone() {
             micMeter.classList.add('inactive');
         }
         updateAudioMeters();
+        console.log('[Mic] Microphone disabled');
     } else {
         // 마이크 활성화
+        console.log('[Mic] Enabling microphone...');
         try {
             micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            // 외부에서 마이크가 종료되면 (다른 앱이 점유, 장치 분리 등)
+            micStream.getAudioTracks().forEach(track => {
+                track.onended = () => {
+                    console.warn('[Mic] Microphone track ended externally');
+                    if (isMicEnabled) {
+                        isMicEnabled = false;
+                        micStream = null;
+                        micAnalyser = null;
+                        if (btn) {
+                            btn.innerHTML = 'Mic<br>OFF';
+                            btn.classList.remove('mic-active');
+                        }
+                        if (micMeter) {
+                            micMeter.classList.add('inactive');
+                        }
+                        if (isCaptionsEnabled) {
+                            stopCaptions();
+                        }
+                        updateAudioMeters();
+                    }
+                };
+            });
+
             isMicEnabled = true;
             if (btn) {
                 btn.innerHTML = 'Mic<br>ON';
@@ -940,11 +1039,21 @@ async function toggleMicrophone() {
                 micMeter.classList.remove('inactive');
             }
             // 마이크 레벨 미터 설정
-            setupMicMeter();
+            await setupMicMeter();
+            console.log('[Mic] Microphone enabled');
         } catch (err) {
-            console.error('Microphone access error:', err);
-            alert('마이크 접근 권한이 필요합니다.');
+            console.error('[Mic] Microphone access error:', err.name, err.message);
+            if (err.name === 'NotFoundError') {
+                alert('마이크를 찾을 수 없습니다. 다른 탭을 닫고 브라우저를 재시작해보세요.');
+            } else if (err.name === 'NotAllowedError') {
+                alert('마이크 접근 권한이 필요합니다.');
+            } else {
+                alert('마이크 접근 실패: ' + err.message);
+            }
         }
+    }
+    } finally {
+        isMicToggling = false;
     }
 }
 
@@ -1213,10 +1322,25 @@ async function startScreenCapture() {
             if (tabMeter) tabMeter.classList.add('inactive');
         }
 
-        // 스트림 종료 감지
+        // 비디오 트랙 종료 감지
         screenStream.getVideoTracks()[0].onended = () => {
+            console.log('[Screen] Video track ended');
             stopScreenCapture();
         };
+
+        // 오디오 트랙 종료 감지 (별도로 종료될 수 있음)
+        screenStream.getAudioTracks().forEach(track => {
+            track.onended = () => {
+                console.log('[Screen] Audio track ended');
+                tabAnalyser = null;
+                const tabMeter = document.getElementById('tab-meter');
+                if (tabMeter) {
+                    tabMeter.classList.add('inactive');
+                    const bar = tabMeter.querySelector('.audio-meter-bar');
+                    if (bar) bar.style.width = '0%';
+                }
+            };
+        });
 
         // 카메라 프리뷰 숨기기 & 화면 공유 모드 활성화
         document.body.classList.add('screen-sharing');
@@ -1230,7 +1354,17 @@ async function startScreenCapture() {
         updateScreenCaptureButtons(true);
 
     } catch (err) {
-        console.error("Screen capture error:", err);
+        console.error("[Screen] Screen capture error:", err.name, err.message);
+        if (err.name === 'NotAllowedError') {
+            // 사용자가 취소하거나 권한 거부
+            console.log('[Screen] User cancelled or permission denied');
+        } else if (err.name === 'NotFoundError') {
+            alert('화면 공유를 사용할 수 없습니다.');
+        } else if (err.name === 'NotSupportedError') {
+            alert('이 브라우저는 화면 공유를 지원하지 않습니다.');
+        } else {
+            alert('화면 공유 오류: ' + err.message);
+        }
     }
 }
 
@@ -1423,6 +1557,12 @@ function startRecording() {
         }
     };
 
+    mediaRecorder.onerror = (event) => {
+        console.error('[Recording] MediaRecorder error:', event.error);
+        alert('녹화 중 오류가 발생했습니다: ' + (event.error?.message || 'Unknown error'));
+        stopRecording();
+    };
+
     mediaRecorder.onstop = () => {
         // 합성 루프 중지
         if (compositeAnimationId) {
@@ -1569,6 +1709,17 @@ function setupScene(canvas) {
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
 
+    // WebGL 컨텍스트 손실 처리
+    canvas.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        console.error('[WebGL] Context lost');
+        alert('그래픽 컨텍스트가 손실되었습니다. 페이지를 새로고침해주세요.');
+    });
+
+    canvas.addEventListener('webglcontextrestored', () => {
+        console.log('[WebGL] Context restored');
+    });
+
     const resizeObserver = new ResizeObserver(() => {
         if (sceneWrapper) {
             const newWidth = sceneWrapper.clientWidth;
@@ -1586,25 +1737,97 @@ function setupScene(canvas) {
 async function setupWebcam() {
     video = document.getElementById('webcam');
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        webcamStream = await navigator.mediaDevices.getUserMedia({
             video: { width: VIDEO_WIDTH, height: VIDEO_HEIGHT }
         });
-        video.srcObject = stream;
+        video.srcObject = webcamStream;
         await new Promise((resolve) => {
             video.onloadedmetadata = () => {
                 resolve(video);
             };
         });
         video.play();
+
+        // 외부에서 카메라가 종료되면 (다른 앱이 점유, 장치 분리 등)
+        webcamStream.getVideoTracks().forEach(track => {
+            track.onended = () => {
+                console.warn('[Camera] Camera track ended externally');
+                if (isCameraEnabled) {
+                    isCameraEnabled = false;
+                    webcamStream = null;
+                    if (video) video.srcObject = null;
+                    updateCameraButton();
+                }
+            };
+        });
+
+        isCameraEnabled = true;
+        updateCameraButton();
     } catch (err) {
         console.error("Error accessing webcam:", err);
+    }
+}
+
+// 카메라 토글
+async function toggleCamera() {
+    const btn = document.getElementById('toggle-camera');
+
+    if (isCameraEnabled) {
+        // 카메라 비활성화
+        if (webcamStream) {
+            webcamStream.getTracks().forEach(track => track.stop());
+            webcamStream = null;
+        }
+        if (video) {
+            video.srcObject = null;
+        }
+        isCameraEnabled = false;
+    } else {
+        // 카메라 활성화
+        try {
+            webcamStream = await navigator.mediaDevices.getUserMedia({
+                video: { width: VIDEO_WIDTH, height: VIDEO_HEIGHT }
+            });
+
+            // 외부에서 카메라가 종료되면
+            webcamStream.getVideoTracks().forEach(track => {
+                track.onended = () => {
+                    console.warn('[Camera] Camera track ended externally');
+                    if (isCameraEnabled) {
+                        isCameraEnabled = false;
+                        webcamStream = null;
+                        if (video) video.srcObject = null;
+                        updateCameraButton();
+                    }
+                };
+            });
+
+            if (video) {
+                video.srcObject = webcamStream;
+                video.play();
+            }
+            isCameraEnabled = true;
+        } catch (err) {
+            console.error("Camera access error:", err);
+            alert('카메라 접근 권한이 필요합니다.');
+            return;
+        }
+    }
+    updateCameraButton();
+}
+
+function updateCameraButton() {
+    const btn = document.getElementById('toggle-camera');
+    if (btn) {
+        btn.innerHTML = isCameraEnabled ? 'Cam<br>ON' : 'Cam<br>OFF';
+        btn.classList.toggle('camera-active', isCameraEnabled);
     }
 }
 
 async function setupMediaPipe() {
     try {
         const filesetResolver = await FilesetResolver.forVisionTasks(
-            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm"
         );
 
         faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
@@ -1639,6 +1862,7 @@ async function setupMediaPipe() {
         console.log("MediaPipe (Face, Pose, Hand) initialized");
     } catch (err) {
         console.error("MediaPipe init error:", err);
+        alert('MediaPipe 초기화 실패. 인터넷 연결을 확인하고 페이지를 새로고침해주세요.');
     }
 }
 
@@ -1661,6 +1885,7 @@ async function loadAvatar() {
         console.log("Avatar loaded");
     } catch (err) {
         console.error("VRM load error:", err);
+        alert('아바타 로딩 실패. 페이지를 새로고침해주세요.');
     }
 }
 
