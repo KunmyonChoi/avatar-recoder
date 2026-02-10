@@ -904,6 +904,32 @@ async function init() {
         }
     });
 
+    // 창 크기 변경 시 미니 아바타 및 대화창 위치 보정
+    window.addEventListener('resize', () => {
+        if (isMiniAvatar && miniAvatarPosition.x !== null) {
+            const miniWidth = 300;
+            const miniHeight = 400;
+
+            // 창 크기를 벗어나지 않도록 클램프
+            const maxX = window.innerWidth - miniWidth;
+            const maxY = window.innerHeight - miniHeight;
+
+            if (miniAvatarPosition.x > maxX || miniAvatarPosition.y > maxY) {
+                miniAvatarPosition.x = Math.max(0, Math.min(miniAvatarPosition.x, maxX));
+                miniAvatarPosition.y = Math.max(0, Math.min(miniAvatarPosition.y, maxY));
+
+                const sceneWrapper = document.getElementById('scene-wrapper');
+                if (sceneWrapper) {
+                    sceneWrapper.style.left = miniAvatarPosition.x + 'px';
+                    sceneWrapper.style.top = miniAvatarPosition.y + 'px';
+                }
+            }
+
+            // 대화창 위치도 업데이트
+            updateDialogueOverlayPosition();
+        }
+    });
+
     animate();
 }
 
@@ -1444,10 +1470,12 @@ function startRecording() {
 
     recordedChunks = [];
 
-    // 합성 캔버스 생성
+    // 합성 캔버스 생성 (DOM에 추가하여 captureStream 호환성 확보)
     compositeCanvas = document.createElement('canvas');
     compositeCanvas.width = 1920;
     compositeCanvas.height = 1080;
+    compositeCanvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;';
+    document.body.appendChild(compositeCanvas);
     compositeCtx = compositeCanvas.getContext('2d');
 
     // 합성 루프 시작
@@ -1485,13 +1513,22 @@ function startRecording() {
             // 미니 모드: 현재 위치에 맞춰 그리기
             const miniWidth = 300;
             const miniHeight = 400;
-            // 화면 비율에 맞춰 위치 변환
+
+            // 현재 창 크기에 맞게 위치 클램프 (창 크기 변경 대응)
+            const clampedX = Math.min(miniAvatarPosition.x || 0, window.innerWidth - miniWidth);
+            const clampedY = Math.min(miniAvatarPosition.y || 0, window.innerHeight - miniHeight);
+            const safeX = Math.max(0, clampedX);
+            const safeY = Math.max(0, clampedY);
+
+            // 균일한 스케일 사용 (비율 유지)
             const scaleX = compositeCanvas.width / window.innerWidth;
             const scaleY = compositeCanvas.height / window.innerHeight;
-            const miniX = (miniAvatarPosition.x || 0) * scaleX;
-            const miniY = (miniAvatarPosition.y || 0) * scaleY;
-            const scaledWidth = miniWidth * scaleX;
-            const scaledHeight = miniHeight * scaleY;
+            const uniformScale = Math.min(scaleX, scaleY); // 비율 유지를 위해 작은 값 사용
+
+            const miniX = safeX * scaleX;
+            const miniY = safeY * scaleY;
+            const scaledWidth = miniWidth * uniformScale;
+            const scaledHeight = miniHeight * uniformScale;
             compositeCtx.drawImage(avatarCanvas, miniX, miniY, scaledWidth, scaledHeight);
         } else {
             // 풀 모드: 전체 화면
@@ -1537,19 +1574,31 @@ function startRecording() {
         micGainNode.connect(audioDestination);
     }
 
-    // 비디오 + 오디오 스트림 합성
-    const combinedStream = new MediaStream([
-        ...canvasStream.getVideoTracks(),
-        ...audioDestination.stream.getAudioTracks()
-    ]);
+    // 비디오 + 오디오 스트림 합성 (오디오 소스가 있을 때만 오디오 추가)
+    const hasAudioSource = (micStream && micStream.getAudioTracks().length > 0) ||
+                           (screenStream && screenStream.getAudioTracks().length > 0);
 
-    // MediaRecorder 설정
-    const options = { mimeType: 'video/webm;codecs=vp9,opus' };
-    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-        options.mimeType = 'video/webm';
+    const streamTracks = [...canvasStream.getVideoTracks()];
+    if (hasAudioSource) {
+        streamTracks.push(...audioDestination.stream.getAudioTracks());
+    }
+    const combinedStream = new MediaStream(streamTracks);
+
+    // MediaRecorder 설정 - 오디오 유무에 따라 코덱 선택
+    let mimeType;
+    if (hasAudioSource) {
+        mimeType = 'video/webm;codecs=vp8,opus';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'video/webm;codecs=vp9,opus';
+        }
+    } else {
+        mimeType = 'video/webm;codecs=vp8';
+    }
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm';
     }
 
-    mediaRecorder = new MediaRecorder(combinedStream, options);
+    mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
 
     mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
@@ -1568,6 +1617,10 @@ function startRecording() {
         if (compositeAnimationId) {
             cancelAnimationFrame(compositeAnimationId);
             compositeAnimationId = null;
+        }
+        // DOM에서 캔버스 제거
+        if (compositeCanvas && compositeCanvas.parentNode) {
+            compositeCanvas.parentNode.removeChild(compositeCanvas);
         }
         compositeCanvas = null;
         compositeCtx = null;
@@ -1599,6 +1652,8 @@ function startRecording() {
 
 function stopRecording() {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
+        // 마지막 데이터를 강제로 수집한 후 중지
+        mediaRecorder.requestData();
         mediaRecorder.stop();
     }
 
@@ -1614,7 +1669,10 @@ function stopRecording() {
 }
 
 function downloadRecording() {
-    if (recordedChunks.length === 0) return;
+    if (recordedChunks.length === 0) {
+        console.warn('[Recording] No recorded data available');
+        return;
+    }
 
     const blob = new Blob(recordedChunks, { type: 'video/webm' });
     const url = URL.createObjectURL(blob);
