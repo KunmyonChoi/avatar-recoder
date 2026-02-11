@@ -604,3 +604,57 @@ body.dialogue-enabled.input-typing #dialogue-input-container {
 .dev-controls:hover .dev-options {
   display: block;
 }
+/* --- Mobile Mode --- */
+body.mobile-mode #controls {
+  padding: 8px 12px;
+  gap: 6px;
+}
+
+body.mobile-mode #controls button {
+  padding: 8px 12px;
+  font-size: 12px;
+  min-width: 50px;
+}
+
+body.mobile-mode .audio-controls {
+  gap: 3px;
+}
+
+body.mobile-mode .audio-meter {
+  width: 40px;
+  height: 14px;
+}
+
+body.mobile-mode #audio-mix-slider {
+  width: 84px;
+}
+
+/* 모바일에서 호버 대신 터치로 옵션 패널 열기 */
+@media (hover: none) {
+  .dialogue-options,
+  .dev-options {
+    display: none;
+  }
+
+  .dialogue-controls.options-open .dialogue-options,
+  .dev-controls.options-open .dev-options {
+    display: block;
+  }
+}
+
+/* 모바일 가로 모드 경고 (세로 권장) */
+@media (max-height: 500px) and (orientation: landscape) {
+  body.mobile-mode::before {
+    content: '세로 모드 권장';
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 100, 100, 0.9);
+    color: white;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    z-index: 9999;
+  }
+}

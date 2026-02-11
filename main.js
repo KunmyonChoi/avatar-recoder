@@ -3,9 +3,14 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils, VRMExpressionPresetName } from '@pixiv/three-vrm';
 import { FilesetResolver, FaceLandmarker, PoseLandmarker, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
 
-// --- Configuration ---
-const VIDEO_WIDTH = 1280;
-const VIDEO_HEIGHT = 720;
+// --- Mobile Detection ---
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+const isAndroid = /Android/i.test(navigator.userAgent);
+
+// --- Configuration (모바일에서는 저해상도) ---
+const VIDEO_WIDTH = isMobile ? 640 : 1280;
+const VIDEO_HEIGHT = isMobile ? 480 : 720;
 
 // --- Improved Configuration ---
 const LERP_SPEED = 12; // 반응 속도 (높을수록 빠름)
@@ -813,6 +818,41 @@ function setupDialogue() {
 
 // --- Initialization ---
 async function init() {
+    // 모바일 모드 설정
+    if (isMobile) {
+        console.log('[Mobile] Mobile device detected:', isIOS ? 'iOS' : isAndroid ? 'Android' : 'Other');
+        document.body.classList.add('mobile-mode');
+
+        // iOS에서는 Screen Capture 미지원
+        if (isIOS) {
+            const screenBtn = document.getElementById('toggle-screen');
+            if (screenBtn) {
+                screenBtn.style.display = 'none';
+            }
+        }
+
+        // 모바일: 터치로 드롭다운 토글 (호버 대신)
+        const setupMobileDropdown = (containerSelector, buttonSelector) => {
+            const container = document.querySelector(containerSelector);
+            const button = document.querySelector(buttonSelector);
+            if (container && button) {
+                button.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    container.classList.toggle('options-open');
+                });
+            }
+        };
+        setupMobileDropdown('.dialogue-controls', '#toggle-dialogue');
+        setupMobileDropdown('.dev-controls', '#toggle-dev');
+
+        // 다른 곳 터치하면 드롭다운 닫기
+        document.addEventListener('click', () => {
+            document.querySelectorAll('.options-open').forEach(el => {
+                el.classList.remove('options-open');
+            });
+        });
+    }
+
     // Dev dropdown menu handlers
     document.querySelectorAll('.option-btn[data-dev]').forEach(btn => {
         btn.addEventListener('click', () => {
