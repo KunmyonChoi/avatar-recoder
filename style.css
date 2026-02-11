@@ -607,26 +607,47 @@ body.dialogue-enabled.input-typing #dialogue-input-container {
 /* --- Mobile Mode --- */
 body.mobile-mode #controls {
   padding: 8px 12px;
-  gap: 6px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  max-width: 100vw;
+  box-sizing: border-box;
 }
 
 body.mobile-mode #controls button {
-  padding: 8px 12px;
+  padding: 8px 10px;
   font-size: 12px;
-  min-width: 50px;
+  min-width: 48px;
 }
 
-body.mobile-mode .audio-controls {
-  gap: 3px;
+/* 모바일: 필수 버튼만 표시 (Record, Cam, Mic, Talk) */
+body.mobile-mode .audio-controls,
+body.mobile-mode .dev-controls,
+body.mobile-mode .divider,
+body.mobile-mode #toggle-avatar-size,
+body.mobile-mode #toggle-body,
+body.mobile-mode #toggle-screen {
+  display: none;
 }
 
-body.mobile-mode .audio-meter {
-  width: 40px;
-  height: 14px;
+/* 모바일: 메시지 입력창 */
+body.mobile-mode #dialogue-input-container {
+  width: calc(100vw - 20px);
+  left: 10px;
+  transform: none;
 }
 
-body.mobile-mode #audio-mix-slider {
-  width: 84px;
+body.mobile-mode #dialogue-input {
+  width: 100%;
+  flex: 1;
+  padding: 10px 16px;
+  font-size: 14px;
+}
+
+body.mobile-mode #clear-dialogue {
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+  flex-shrink: 0;
 }
 
 /* 모바일에서 호버 대신 터치로 옵션 패널 열기 */

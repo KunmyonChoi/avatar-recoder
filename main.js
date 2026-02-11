@@ -173,7 +173,7 @@ const MAX_VISIBLE_MESSAGES = 5;
 let dialogueMessages = [];
 let isDialogueEnabled = false;
 let dialogueDisplayMode = 'single';  // 'history' or 'single'
-let dialogueInputMode = 'voice';     // 'typing' or 'voice'
+let dialogueInputMode = isMobile ? 'typing' : 'voice';  // 모바일: typing, 데스크탑: voice
 let speechRecognition = null;
 let currentInterimText = '';
 let messageTimeout = null;
@@ -814,6 +814,11 @@ function setupDialogue() {
     // 기본 모드 설정
     document.body.classList.add('display-' + dialogueDisplayMode);
     document.body.classList.add('input-' + dialogueInputMode);
+
+    // 옵션 버튼 활성 상태 업데이트
+    document.querySelectorAll('.option-btn[data-input]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.input === dialogueInputMode);
+    });
 }
 
 // --- Initialization ---
@@ -822,14 +827,6 @@ async function init() {
     if (isMobile) {
         console.log('[Mobile] Mobile device detected:', isIOS ? 'iOS' : isAndroid ? 'Android' : 'Other');
         document.body.classList.add('mobile-mode');
-
-        // iOS에서는 Screen Capture 미지원
-        if (isIOS) {
-            const screenBtn = document.getElementById('toggle-screen');
-            if (screenBtn) {
-                screenBtn.style.display = 'none';
-            }
-        }
 
         // 모바일: 터치로 드롭다운 토글 (호버 대신)
         const setupMobileDropdown = (containerSelector, buttonSelector) => {
