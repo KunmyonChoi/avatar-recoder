@@ -323,7 +323,6 @@ body.recording #controls {
 /* 녹화 중 숨길 버튼들 (녹화와 무관한 설정들) */
 body.recording #toggle-debug,
 body.recording #toggle-view,
-body.recording #toggle-screen,
 body.recording .divider {
   display: none;
 }

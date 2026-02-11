@@ -374,6 +374,7 @@ function updateCaptionOverlayPosition() {
 
 // --- Speech-to-Text Captions ---
 let isCaptionsEnabled = false;
+let isCaptionsStarting = false;  // 시작 중 race condition 방지
 let currentCaption = '';
 let captionTimeout = null;
 
@@ -436,10 +437,13 @@ function initSpeechRecognition() {
 
     speechRecognition.onend = () => {
         // Restart if still enabled AND mic is on (continuous mode can stop unexpectedly)
-        if (isCaptionsEnabled && isMicEnabled) {
+        if (isCaptionsEnabled && isMicEnabled && !isCaptionsStarting) {
             try {
+                isCaptionsStarting = true;
                 speechRecognition.start();
+                isCaptionsStarting = false;
             } catch (e) {
+                isCaptionsStarting = false;
                 console.warn('Failed to restart speech recognition:', e);
             }
         } else if (isCaptionsEnabled && !isMicEnabled) {
@@ -454,9 +458,9 @@ function initSpeechRecognition() {
 }
 
 function startCaptions() {
-    // 이미 실행 중이면 무시
-    if (isCaptionsEnabled) {
-        console.log('[Captions] Already running, skipping...');
+    // 이미 실행 중이거나 시작 중이면 무시
+    if (isCaptionsEnabled || isCaptionsStarting) {
+        console.log('[Captions] Already running or starting, skipping...');
         return;
     }
 
@@ -472,8 +476,10 @@ function startCaptions() {
     }
 
     try {
+        isCaptionsStarting = true;
         speechRecognition.start();
         isCaptionsEnabled = true;
+        isCaptionsStarting = false;
         document.body.classList.add('captions-enabled');
 
         const btn = document.getElementById('toggle-captions');
@@ -483,6 +489,7 @@ function startCaptions() {
         }
         console.log('[Captions] Started');
     } catch (e) {
+        isCaptionsStarting = false;
         console.error('Failed to start speech recognition:', e);
     }
 }
@@ -1523,16 +1530,44 @@ function startRecording() {
             // 균일한 스케일 사용 (비율 유지)
             const scaleX = compositeCanvas.width / window.innerWidth;
             const scaleY = compositeCanvas.height / window.innerHeight;
-            const uniformScale = Math.min(scaleX, scaleY); // 비율 유지를 위해 작은 값 사용
+            const uniformScale = Math.min(scaleX, scaleY);
 
-            const miniX = safeX * scaleX;
-            const miniY = safeY * scaleY;
             const scaledWidth = miniWidth * uniformScale;
             const scaledHeight = miniHeight * uniformScale;
+
+            // 위치 계산: 하단/우측 경계 기준으로 정렬
+            // 미니 아바타의 우측 끝이 창 우측에 있으면 녹화에서도 우측에
+            // 미니 아바타의 하단 끝이 창 하단에 있으면 녹화에서도 하단에
+            const rightEdge = safeX + miniWidth;
+            const bottomEdge = safeY + miniHeight;
+
+            // X 위치: 우측 경계 기준으로 계산
+            const miniX = (rightEdge / window.innerWidth) * compositeCanvas.width - scaledWidth;
+            // Y 위치: 하단 경계 기준으로 계산
+            const miniY = (bottomEdge / window.innerHeight) * compositeCanvas.height - scaledHeight;
+
             compositeCtx.drawImage(avatarCanvas, miniX, miniY, scaledWidth, scaledHeight);
         } else {
-            // 풀 모드: 전체 화면
-            compositeCtx.drawImage(avatarCanvas, 0, 0, compositeCanvas.width, compositeCanvas.height);
+            // 풀 모드: 비율 유지하며 하단 정렬 (프리뷰와 동일하게)
+            const avatarAspect = avatarCanvas.width / avatarCanvas.height;
+            const canvasAspect = compositeCanvas.width / compositeCanvas.height;
+            let drawWidth, drawHeight, drawX, drawY;
+
+            if (avatarAspect > canvasAspect) {
+                // 아바타가 더 넓음 - 좌우 맞춤, 상단 여백 (하단 정렬)
+                drawWidth = compositeCanvas.width;
+                drawHeight = drawWidth / avatarAspect;
+                drawX = 0;
+                drawY = compositeCanvas.height - drawHeight;  // 하단 정렬
+            } else {
+                // 아바타가 더 높음 - 상하 맞춤, 좌우 중앙 정렬
+                drawHeight = compositeCanvas.height;
+                drawWidth = drawHeight * avatarAspect;
+                drawX = (compositeCanvas.width - drawWidth) / 2;
+                drawY = 0;
+            }
+
+            compositeCtx.drawImage(avatarCanvas, drawX, drawY, drawWidth, drawHeight);
         }
 
         // 3. 대화 메시지 그리기
@@ -1645,7 +1680,7 @@ function startRecording() {
     // 버튼 상태 업데이트
     const toggleRecordBtn = document.getElementById('toggle-record');
     if (toggleRecordBtn) {
-        toggleRecordBtn.innerHTML = 'Record<br>ON';
+        toggleRecordBtn.innerHTML = 'Stop<br>Record';
         toggleRecordBtn.classList.add('recording');
     }
 }
@@ -1663,7 +1698,7 @@ function stopRecording() {
     // 버튼 상태 업데이트
     const toggleRecordBtn = document.getElementById('toggle-record');
     if (toggleRecordBtn) {
-        toggleRecordBtn.innerHTML = 'Record<br>OFF';
+        toggleRecordBtn.innerHTML = 'Start<br>Record';
         toggleRecordBtn.classList.remove('recording');
     }
 }
@@ -1693,15 +1728,12 @@ function updateScreenCaptureButtons(isCapturing) {
     const toggleRecordBtn = document.getElementById('toggle-record');
 
     if (toggleScreenBtn) {
-        toggleScreenBtn.innerHTML = isCapturing ? 'Screen<br>ON' : 'Screen<br>OFF';
+        toggleScreenBtn.innerHTML = isCapturing ? 'Stop<br>Capture' : 'Screen<br>Capture';
         if (isCapturing) {
             toggleScreenBtn.classList.add('mic-active');
         } else {
             toggleScreenBtn.classList.remove('mic-active');
         }
-    }
-    if (toggleRecordBtn) {
-        toggleRecordBtn.disabled = !isCapturing;
     }
 }
 
