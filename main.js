@@ -120,6 +120,8 @@ let scene, camera, renderer;
 let video;
 let faceLandmarker, poseLandmarker, handLandmarker;
 let currentVrm;
+let currentAvatarUrl = './avatar.vrm';
+let isAvatarLoading = false;
 let lastVideoTime = -1;
 let lastFrameTime = performance.now();
 let blendShapes = [];
@@ -140,6 +142,17 @@ let mediaRecorder = null;            // 녹화기
 let recordedChunks = [];             // 녹화 데이터
 let isMiniAvatar = false;            // 미니 아바타 모드
 let miniAvatarPosition = { x: null, y: null };  // 미니 아바타 위치
+
+// --- Screen Zoom ---
+let screenZoom = 1;
+let screenZoomTx = 0;
+let screenZoomTy = 0;
+let isScreenPanning = false;
+let screenPanStartX = 0;
+let screenPanStartY = 0;
+let screenZoomTxStart = 0;
+let screenZoomTyStart = 0;
+let zoomIndicatorTimer = null;
 
 // --- Audio ---
 let micStream = null;                // 마이크 스트림
@@ -893,6 +906,69 @@ async function init() {
         });
     }
 
+    // 아바타 드롭다운
+    const avatarDropdown = document.getElementById('avatar-select-dropdown');
+    if (avatarDropdown) {
+        avatarDropdown.addEventListener('change', async () => {
+            const url = avatarDropdown.value;
+            if (isAvatarLoading || currentAvatarUrl === url) return;
+            avatarDropdown.disabled = true;
+            await switchAvatar(url);
+            avatarDropdown.disabled = false;
+            // 로드 실패 시 이전 값으로 복원
+            avatarDropdown.value = currentAvatarUrl;
+        });
+    }
+
+    // 커스텀 VRM 파일 로드
+    let customAvatarBlobUrl = null;
+    const loadCustomBtn = document.getElementById('load-custom-avatar');
+    const avatarFileInput = document.getElementById('avatar-file-input');
+
+    if (loadCustomBtn && avatarFileInput) {
+        loadCustomBtn.addEventListener('click', () => {
+            avatarFileInput.click();
+        });
+
+        avatarFileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file || (!file.name.endsWith('.vrm') && !file.name.endsWith('.glb'))) return;
+
+            if (customAvatarBlobUrl) URL.revokeObjectURL(customAvatarBlobUrl);
+            customAvatarBlobUrl = URL.createObjectURL(file);
+
+            if (avatarDropdown) avatarDropdown.disabled = true;
+            loadCustomBtn.disabled = true;
+
+            const prevUrl = currentAvatarUrl;
+            currentAvatarUrl = '';
+            await switchAvatar(customAvatarBlobUrl);
+
+            loadCustomBtn.disabled = false;
+            if (avatarDropdown) avatarDropdown.disabled = false;
+
+            if (currentAvatarUrl === customAvatarBlobUrl) {
+                // 드롭다운에 커스텀 옵션 추가 또는 갱신
+                let customOpt = avatarDropdown?.querySelector('option[data-custom]');
+                if (!customOpt && avatarDropdown) {
+                    customOpt = document.createElement('option');
+                    customOpt.dataset.custom = '1';
+                    avatarDropdown.appendChild(customOpt);
+                }
+                if (customOpt) {
+                    customOpt.value = customAvatarBlobUrl;
+                    customOpt.textContent = `★ ${file.name.replace(/\.(vrm|glb)$/i, '')}`;
+                    if (avatarDropdown) avatarDropdown.value = customAvatarBlobUrl;
+                }
+                loadCustomBtn.textContent = 'Load VRM';
+            } else {
+                currentAvatarUrl = prevUrl;
+                if (avatarDropdown) avatarDropdown.value = prevUrl;
+            }
+            avatarFileInput.value = '';
+        });
+    }
+
     const canvas = document.getElementById('output_canvas');
 
     window.triggerGesture = (name) => {
@@ -903,6 +979,7 @@ async function init() {
 
     // Screen capture & recording buttons
     setupScreenCaptureControls();
+    setupScreenZoomAndPan();
 
     // Unified dialogue system
     setupDialogue();
@@ -932,7 +1009,8 @@ async function init() {
 
     setupWebcam();
     setupMediaPipe();
-    loadAvatar();
+    isAvatarLoading = true;
+    loadAvatar().finally(() => { isAvatarLoading = false; });
 
     // 탭 전환/최소화 시 처리
     document.addEventListener('visibilitychange', () => {
@@ -1370,6 +1448,134 @@ function onDragEnd() {
     document.removeEventListener('touchend', onDragEnd);
 }
 
+// ============================================================
+// Screen Zoom
+// ============================================================
+function getScreenVideoRenderRect(video) {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const ew = video.offsetWidth;
+    const eh = video.offsetHeight;
+    if (!vw || !vh || !ew || !eh) return null;
+    const videoAspect = vw / vh;
+    const elemAspect = ew / eh;
+    let rx, ry, rw, rh;
+    if (videoAspect > elemAspect) {
+        rw = ew; rh = ew / videoAspect;
+        rx = 0; ry = (eh - rh) / 2;
+    } else {
+        rh = eh; rw = eh * videoAspect;
+        rx = (ew - rw) / 2; ry = 0;
+    }
+    return { rx, ry, rw, rh };
+}
+
+function applyScreenZoom() {
+    const screenBg = document.getElementById('screen-background');
+    if (!screenBg) return;
+    if (screenZoom <= 1) {
+        screenBg.style.transform = '';
+        screenBg.style.transformOrigin = '';
+        document.body.classList.remove('screen-zoomed');
+    } else {
+        screenBg.style.transformOrigin = '0 0';
+        screenBg.style.transform = `translate(${screenZoomTx}px, ${screenZoomTy}px) scale(${screenZoom})`;
+        document.body.classList.add('screen-zoomed');
+    }
+    updateZoomIndicator();
+}
+
+function resetScreenZoom() {
+    screenZoom = 1;
+    screenZoomTx = 0;
+    screenZoomTy = 0;
+    applyScreenZoom();
+}
+
+function updateZoomIndicator() {
+    const indicator = document.getElementById('screen-zoom-indicator');
+    if (!indicator) return;
+    if (screenZoom > 1) {
+        indicator.textContent = `${screenZoom.toFixed(1)}×`;
+        indicator.style.opacity = '1';
+        clearTimeout(zoomIndicatorTimer);
+        zoomIndicatorTimer = setTimeout(() => {
+            indicator.style.opacity = '0';
+        }, 1500);
+    } else {
+        indicator.style.opacity = '0';
+    }
+}
+
+function setupScreenZoomAndPan() {
+    const container = document.getElementById('preview-container');
+    const screenBg = document.getElementById('screen-background');
+    if (!container || !screenBg) return;
+
+    // 마우스 휠 / 트랙패드 핀치줌 (ctrlKey)
+    container.addEventListener('wheel', (e) => {
+        if (!screenStream) return;
+        e.preventDefault();
+
+        const rect = container.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const W = rect.width;
+        const H = rect.height;
+
+        const zoomFactor = e.ctrlKey
+            ? Math.pow(0.98, e.deltaY)   // 핀치줌: 부드럽게
+            : e.deltaY < 0 ? 1.12 : 1 / 1.12; // 마우스 휠
+
+        const newZoom = Math.max(1, Math.min(8, screenZoom * zoomFactor));
+
+        const ratio = newZoom / screenZoom;
+        const newTx = mx * (1 - ratio) + screenZoomTx * ratio;
+        const newTy = my * (1 - ratio) + screenZoomTy * ratio;
+
+        screenZoom = newZoom;
+        screenZoomTx = Math.max(W * (1 - screenZoom), Math.min(0, newTx));
+        screenZoomTy = Math.max(H * (1 - screenZoom), Math.min(0, newTy));
+
+        applyScreenZoom();
+    }, { passive: false });
+
+    // 드래그 패닝 (줌 상태에서)
+    screenBg.addEventListener('mousedown', (e) => {
+        if (!screenStream || screenZoom <= 1) return;
+        isScreenPanning = true;
+        screenPanStartX = e.clientX;
+        screenPanStartY = e.clientY;
+        screenZoomTxStart = screenZoomTx;
+        screenZoomTyStart = screenZoomTy;
+        document.body.classList.add('screen-panning');
+        e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isScreenPanning) return;
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        const newTx = screenZoomTxStart + (e.clientX - screenPanStartX);
+        const newTy = screenZoomTyStart + (e.clientY - screenPanStartY);
+        screenZoomTx = Math.max(W * (1 - screenZoom), Math.min(0, newTx));
+        screenZoomTy = Math.max(H * (1 - screenZoom), Math.min(0, newTy));
+        applyScreenZoom();
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!isScreenPanning) return;
+        isScreenPanning = false;
+        document.body.classList.remove('screen-panning');
+    });
+
+    // 더블클릭으로 줌 리셋
+    screenBg.addEventListener('dblclick', () => {
+        if (!screenStream) return;
+        resetScreenZoom();
+    });
+}
+
 async function startScreenCapture() {
     try {
         // 화면 공유 요청 (오디오 포함 시도)
@@ -1466,6 +1672,9 @@ function stopScreenCapture() {
         if (bar) bar.style.width = '0%';
     }
 
+    // 줌 상태 리셋
+    resetScreenZoom();
+
     // 카메라 프리뷰 다시 보이기
     document.body.classList.remove('screen-sharing');
 
@@ -1525,31 +1734,51 @@ function startRecording() {
     // 합성 루프 시작
     function compositeFrame() {
         // 1. 배경 그리기 (화면 공유가 있으면)
-        if (screenBg && screenBg.srcObject) {
-            // 비디오를 캔버스 중앙에 맞춰 그리기
-            const videoAspect = screenBg.videoWidth / screenBg.videoHeight;
-            const canvasAspect = compositeCanvas.width / compositeCanvas.height;
+        compositeCtx.fillStyle = '#000';
+        compositeCtx.fillRect(0, 0, compositeCanvas.width, compositeCanvas.height);
+        if (screenBg && screenBg.srcObject && screenBg.videoWidth) {
+            if (screenZoom > 1) {
+                // 줌 상태: 현재 보이는 영역만 크롭해서 캔버스 전체에 그리기
+                const renderRect = getScreenVideoRenderRect(screenBg);
+                if (renderRect) {
+                    const { rx, ry, rw, rh } = renderRect;
+                    const W = window.innerWidth;
+                    const H = window.innerHeight;
+                    const vw = screenBg.videoWidth;
+                    const vh = screenBg.videoHeight;
 
-            let drawWidth, drawHeight, drawX, drawY;
+                    const visLeftNorm  = Math.max(0, (-screenZoomTx / screenZoom - rx) / rw);
+                    const visRightNorm = Math.min(1, ((W - screenZoomTx) / screenZoom - rx) / rw);
+                    const visTopNorm   = Math.max(0, (-screenZoomTy / screenZoom - ry) / rh);
+                    const visBottomNorm = Math.min(1, ((H - screenZoomTy) / screenZoom - ry) / rh);
 
-            if (videoAspect > canvasAspect) {
-                drawWidth = compositeCanvas.width;
-                drawHeight = drawWidth / videoAspect;
-                drawX = 0;
-                drawY = (compositeCanvas.height - drawHeight) / 2;
+                    const sx = visLeftNorm * vw;
+                    const sy = visTopNorm * vh;
+                    const sw = (visRightNorm - visLeftNorm) * vw;
+                    const sh = (visBottomNorm - visTopNorm) * vh;
+
+                    if (sw > 0 && sh > 0) {
+                        compositeCtx.drawImage(screenBg, sx, sy, sw, sh, 0, 0, compositeCanvas.width, compositeCanvas.height);
+                    }
+                }
             } else {
-                drawHeight = compositeCanvas.height;
-                drawWidth = drawHeight * videoAspect;
-                drawX = (compositeCanvas.width - drawWidth) / 2;
-                drawY = 0;
+                // 줌 없음: 기존 aspect-ratio 유지 그리기
+                const videoAspect = screenBg.videoWidth / screenBg.videoHeight;
+                const canvasAspect = compositeCanvas.width / compositeCanvas.height;
+                let drawWidth, drawHeight, drawX, drawY;
+                if (videoAspect > canvasAspect) {
+                    drawWidth = compositeCanvas.width;
+                    drawHeight = drawWidth / videoAspect;
+                    drawX = 0;
+                    drawY = (compositeCanvas.height - drawHeight) / 2;
+                } else {
+                    drawHeight = compositeCanvas.height;
+                    drawWidth = drawHeight * videoAspect;
+                    drawX = (compositeCanvas.width - drawWidth) / 2;
+                    drawY = 0;
+                }
+                compositeCtx.drawImage(screenBg, drawX, drawY, drawWidth, drawHeight);
             }
-
-            compositeCtx.fillStyle = '#000';
-            compositeCtx.fillRect(0, 0, compositeCanvas.width, compositeCanvas.height);
-            compositeCtx.drawImage(screenBg, drawX, drawY, drawWidth, drawHeight);
-        } else {
-            compositeCtx.fillStyle = '#000';
-            compositeCtx.fillRect(0, 0, compositeCanvas.width, compositeCanvas.height);
         }
 
         // 2. 아바타 캔버스 그리기
@@ -1993,26 +2222,47 @@ async function setupMediaPipe() {
     }
 }
 
-async function loadAvatar() {
+async function loadAvatar(url = './avatar.vrm') {
     const loader = new GLTFLoader();
     loader.register((parser) => {
         return new VRMLoaderPlugin(parser);
     });
 
     try {
-        const url = './avatar.vrm';
         const gltf = await loader.loadAsync(url);
         const vrm = gltf.userData.vrm;
 
         VRMUtils.removeUnnecessaryVertices(gltf.scene);
         VRMUtils.removeUnnecessaryJoints(gltf.scene);
+        VRMUtils.rotateVRM0(vrm);
 
         scene.add(vrm.scene);
         currentVrm = vrm;
-        console.log("Avatar loaded");
+        currentAvatarUrl = url;
+        console.log("Avatar loaded:", url);
     } catch (err) {
         console.error("VRM load error:", err);
         alert('아바타 로딩 실패. 페이지를 새로고침해주세요.');
+        throw err;
+    }
+}
+
+async function switchAvatar(url) {
+    if (isAvatarLoading || currentAvatarUrl === url) return;
+    isAvatarLoading = true;
+
+    if (currentVrm) {
+        scene.remove(currentVrm.scene);
+        VRMUtils.deepDispose(currentVrm.scene);
+        currentVrm = null;
+    }
+
+    try {
+        await loadAvatar(url);
+    } catch (_err) {
+        currentAvatarUrl = '';
+    } finally {
+        isAvatarLoading = false;
     }
 }
 
@@ -2167,10 +2417,10 @@ function resetPose(deltaTime) {
     const leftLowerArm = currentVrm.humanoid.getNormalizedBoneNode('leftLowerArm');
 
     // T-Pose에서 팔을 내린 상태로
-    // VRM 기본: T-Pose (팔이 수평)
-    // 내린 상태: Z축 회전
-    const relaxRight = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45, 'XYZ'));
-    const relaxLeft = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45, 'XYZ'));
+    // VRM 0.x는 rotateVRM0로 scene이 180°Y 회전되어 normalized bone의 Z 방향이 반전됨
+    const zDir = currentVrm.meta?.metaVersion === '0' ? -1 : 1;
+    const relaxRight = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45 * zDir, 'XYZ'));
+    const relaxLeft = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45 * zDir, 'XYZ'));
     const neutralLower = new THREE.Quaternion(); // 아래팔은 펴진 상태
 
     if (rightUpperArm) rightUpperArm.quaternion.slerp(relaxRight, factor);
@@ -2304,6 +2554,8 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     updateDebug3D(worldLandmarks);
 
     const factor = getLerpFactor(deltaTime);
+    // VRM 0.x는 rotateVRM0으로 scene이 180°Y 회전 → normalized bone의 X·Z 방향 반전
+    const isVRM0 = currentVrm.meta?.metaVersion === '0';
 
     // 랜드마크를 VRM 좌표계로 변환하는 헬퍼
     const getPos = (index) => {
@@ -2330,7 +2582,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const dy = mpRight.y - mpLeft.y;  // 반전
         const dz = mpRight.z - mpLeft.z;  // 반전
 
-        const roll = dy * 1.2;  // Z축 회전 (좌우 기울기)
+        const roll = dy * 1.2 * (isVRM0 ? -1 : 1);  // Z축 회전 (VRM 0.x: 방향 반전)
         const yaw = dz * 1.0;   // Y축 회전 (어깨 회전)
 
         const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, roll, 'XYZ'));
@@ -2379,10 +2631,10 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(-1, 0, 0), deltaTime);
+        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime);
     } else if (rUpper && !leftArmActive) {
         // 팔 내리기
-        const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45, 'XYZ'));
+        const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
         const neutralQuat = new THREE.Quaternion();
         rUpper.quaternion.slerp(relaxQuat, factor * 0.3);
         if (rLower) rLower.quaternion.slerp(neutralQuat, factor * 0.3);
@@ -2406,10 +2658,10 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(1, 0, 0), deltaTime);
+        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime);
     } else if (lUpper && !rightArmActive) {
         // 팔 내리기
-        const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45, 'XYZ'));
+        const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
         const neutralQuat = new THREE.Quaternion();
         lUpper.quaternion.slerp(relaxQuat, factor * 0.3);
         if (lLower) lLower.quaternion.slerp(neutralQuat, factor * 0.3);
@@ -2475,15 +2727,15 @@ function applyHandFixedRotation(prefix, factor) {
     if (!handBone) return;
 
     const isRight = prefix === 'right';
+    const isVRM0 = currentVrm?.meta?.metaVersion === '0';
 
     // T-Pose에서 손바닥은 아래를 향함
-    // 손바닥이 앞(카메라)을 향하려면 X축으로 -90도 회전
-    // Y축으로 약간 안쪽 회전 추가 (팔 들었을 때 보정)
-    const yTwist = isRight ? -0.3 : 0.3;  // 약 17도 안쪽으로
+    // 손바닥이 앞(카메라)을 향하려면 X축으로 -90도 회전 (VRM 0.x: +90도로 반전)
+    const yTwist = isRight ? -0.3 : 0.3;
 
     const handRot = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        -Math.PI / 2,  // X축: 손바닥을 앞으로
-        yTwist,        // Y축: 약간 안쪽으로
+        isVRM0 ? Math.PI / 2 : -Math.PI / 2,  // X축: VRM 0.x는 방향 반전
+        yTwist,
         0
     ));
 

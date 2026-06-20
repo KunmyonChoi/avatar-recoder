@@ -20,6 +20,8 @@
       <div id="scene-wrapper">
         <canvas id="output_canvas"></canvas>
       </div>
+      <!-- Screen Zoom Indicator -->
+      <div id="screen-zoom-indicator">1.0×</div>
       <!-- Dialogue Overlay (unified chat/caption) -->
       <div id="dialogue-overlay">
         <div id="dialogue-messages"></div>
@@ -51,6 +53,14 @@
       <span class="divider">|</span>
       <!-- 아바타 제어 -->
       <button id="toggle-avatar-size">Avatar<br>Full</button>
+      <div class="avatar-select">
+        <select id="avatar-select-dropdown" title="아바타 선택">
+          <option value="./avatar.vrm">♀ Female</option>
+          <option value="./avatar-male.glb">♂ Male</option>
+        </select>
+        <button id="load-custom-avatar" title="로컬 VRM 파일 불러오기">Load<br>VRM</button>
+        <input type="file" id="avatar-file-input" accept=".vrm,.glb" style="display:none">
+      </div>
       <button id="toggle-body">Pose<br>OFF</button>
       <div class="dialogue-controls">
         <button id="toggle-dialogue">Talk<br>OFF</button>
