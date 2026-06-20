@@ -154,6 +154,11 @@ let screenZoomTxStart = 0;
 let screenZoomTyStart = 0;
 let zoomIndicatorTimer = null;
 
+// --- Captured Screen Resolution ---
+let capturedScreenWidth = 0;     // 캡쳐된 화면 실제 너비
+let capturedScreenHeight = 0;    // 캡쳐된 화면 실제 높이
+let prevRendererSize = null;     // 세로 모드 적응 전 렌더러 크기 저장
+
 // --- Audio ---
 let micStream = null;                // 마이크 스트림
 let isMicEnabled = false;            // 마이크 활성화 상태
@@ -1500,11 +1505,85 @@ function updateZoomIndicator() {
         indicator.style.opacity = '1';
         clearTimeout(zoomIndicatorTimer);
         zoomIndicatorTimer = setTimeout(() => {
-            indicator.style.opacity = '0';
+            // 줌 해제 후: 해상도 표시 또는 숨김
+            if (capturedScreenWidth > 0) {
+                indicator.textContent = `${capturedScreenWidth}×${capturedScreenHeight}`;
+                indicator.style.opacity = '0.75';
+            } else {
+                indicator.style.opacity = '0';
+            }
         }, 1500);
+    } else if (capturedScreenWidth > 0) {
+        // 스크린 캡쳐 중: 캡쳐 해상도 표시
+        indicator.textContent = `${capturedScreenWidth}×${capturedScreenHeight}`;
+        indicator.style.opacity = '0.75';
     } else {
         indicator.style.opacity = '0';
     }
+}
+
+// 캡쳐 해상도에 맞춰 Three.js 렌더러 크기 적응 (세로 모드 대응)
+function adaptRendererToCapture() {
+    if (!capturedScreenWidth || !capturedScreenHeight) return;
+    if (!renderer || !camera) return;
+
+    const isPortrait = capturedScreenHeight > capturedScreenWidth;
+    if (!isPortrait) return;  // 가로 모드는 변경 없음
+
+    // 미니 아바타 모드는 이미 300×400 (3:4) portrait canvas → 불필요
+    if (isMiniAvatar) return;
+
+    const sceneWrapper = document.getElementById('scene-wrapper');
+    if (!sceneWrapper) return;
+
+    // 현재 크기 저장
+    prevRendererSize = {
+        cssWidth: sceneWrapper.style.width,
+        cssHeight: sceneWrapper.style.height,
+    };
+
+    // 브라우저 창 높이 기준으로 세로 아바타 캔버스 크기 계산
+    const aspect = capturedScreenWidth / capturedScreenHeight;
+    const targetHeight = Math.min(window.innerHeight * 0.85, 720);
+    const targetWidth = Math.round(targetHeight * aspect);
+
+    sceneWrapper.style.width = targetWidth + 'px';
+    sceneWrapper.style.height = targetHeight + 'px';
+
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+    renderer.setSize(targetWidth, targetHeight);
+
+    console.log(`[Screen] Renderer adapted to portrait: ${targetWidth}×${targetHeight} (${capturedScreenWidth}×${capturedScreenHeight})`);
+}
+
+// 스크린 캡쳐 종료 시 렌더러 크기 복원
+function restoreRendererFromCapture() {
+    if (!prevRendererSize || !renderer || !camera) {
+        prevRendererSize = null;
+        return;
+    }
+
+    const sceneWrapper = document.getElementById('scene-wrapper');
+    if (!sceneWrapper) { prevRendererSize = null; return; }
+
+    sceneWrapper.style.width = prevRendererSize.cssWidth || '';
+    sceneWrapper.style.height = prevRendererSize.cssHeight || '';
+
+    // ResizeObserver가 자동 업데이트하지만 즉시 적용도 보장
+    setTimeout(() => {
+        if (!sceneWrapper || !renderer || !camera) return;
+        const w = sceneWrapper.clientWidth;
+        const h = sceneWrapper.clientHeight;
+        if (w > 0 && h > 0) {
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }
+    }, 100);
+
+    prevRendererSize = null;
+    console.log('[Screen] Renderer size restored');
 }
 
 function setupScreenZoomAndPan() {
@@ -1588,6 +1667,19 @@ async function startScreenCapture() {
         screenVideo = document.getElementById('screen-background');
         screenVideo.srcObject = screenStream;
         screenVideo.play();
+
+        // 캡쳐된 화면 해상도 감지 (loadedmetadata 또는 이미 준비된 경우 즉시)
+        const detectCapturedResolution = () => {
+            if (screenVideo.videoWidth > 0) {
+                capturedScreenWidth = screenVideo.videoWidth;
+                capturedScreenHeight = screenVideo.videoHeight;
+                console.log(`[Screen] Captured resolution: ${capturedScreenWidth}×${capturedScreenHeight}`);
+                adaptRendererToCapture();
+                updateZoomIndicator();
+            }
+        };
+        screenVideo.addEventListener('loadedmetadata', detectCapturedResolution, { once: true });
+        if (screenVideo.videoWidth > 0) detectCapturedResolution();
 
         // 탭 오디오 여부 확인 및 레벨 미터 설정
         const hasTabAudio = screenStream.getAudioTracks().length > 0;
@@ -1675,6 +1767,12 @@ function stopScreenCapture() {
     // 줌 상태 리셋
     resetScreenZoom();
 
+    // 캡쳐 해상도 리셋 및 렌더러 복원
+    capturedScreenWidth = 0;
+    capturedScreenHeight = 0;
+    restoreRendererFromCapture();
+    updateZoomIndicator();
+
     // 카메라 프리뷰 다시 보이기
     document.body.classList.remove('screen-sharing');
 
@@ -1724,9 +1822,10 @@ function startRecording() {
     recordedChunks = [];
 
     // 합성 캔버스 생성 (DOM에 추가하여 captureStream 호환성 확보)
+    // 스크린 캡쳐 중이면 실제 캡쳐 해상도 사용, 아니면 기본 1920×1080
     compositeCanvas = document.createElement('canvas');
-    compositeCanvas.width = 1920;
-    compositeCanvas.height = 1080;
+    compositeCanvas.width = capturedScreenWidth > 0 ? capturedScreenWidth : 1920;
+    compositeCanvas.height = capturedScreenHeight > 0 ? capturedScreenHeight : 1080;
     compositeCanvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;';
     document.body.appendChild(compositeCanvas);
     compositeCtx = compositeCanvas.getContext('2d');
@@ -1793,24 +1892,43 @@ function startRecording() {
             const safeX = Math.max(0, clampedX);
             const safeY = Math.max(0, clampedY);
 
-            // 균일한 스케일 사용 (비율 유지)
-            const scaleX = compositeCanvas.width / window.innerWidth;
-            const scaleY = compositeCanvas.height / window.innerHeight;
-            const uniformScale = Math.min(scaleX, scaleY);
+            let miniX, miniY, scaledWidth, scaledHeight;
 
-            const scaledWidth = miniWidth * uniformScale;
-            const scaledHeight = miniHeight * uniformScale;
+            if (capturedScreenWidth > 0 && screenBg && screenBg.videoWidth) {
+                // 스크린 캡쳐 중: composite 캔버스 = 캡쳐 해상도
+                // 브라우저 뷰포트 좌표 → 캡쳐된 비디오 픽셀 좌표로 변환
+                const renderRect = getScreenVideoRenderRect(screenBg);
+                if (renderRect) {
+                    const { rx, ry, rw, rh } = renderRect;
+                    // 비디오 렌더 영역 기준 스케일 (1px browser = N px video)
+                    const scaleToVideo = capturedScreenWidth / rw;
+                    scaledWidth = miniWidth * scaleToVideo;
+                    scaledHeight = miniHeight * scaleToVideo;
 
-            // 위치 계산: 하단/우측 경계 기준으로 정렬
-            // 미니 아바타의 우측 끝이 창 우측에 있으면 녹화에서도 우측에
-            // 미니 아바타의 하단 끝이 창 하단에 있으면 녹화에서도 하단에
-            const rightEdge = safeX + miniWidth;
-            const bottomEdge = safeY + miniHeight;
-
-            // X 위치: 우측 경계 기준으로 계산
-            const miniX = (rightEdge / window.innerWidth) * compositeCanvas.width - scaledWidth;
-            // Y 위치: 하단 경계 기준으로 계산
-            const miniY = (bottomEdge / window.innerHeight) * compositeCanvas.height - scaledHeight;
+                    const rightEdge = safeX + miniWidth;
+                    const bottomEdge = safeY + miniHeight;
+                    miniX = ((rightEdge - rx) / rw) * capturedScreenWidth - scaledWidth;
+                    miniY = ((bottomEdge - ry) / rh) * capturedScreenHeight - scaledHeight;
+                } else {
+                    // 렌더 rect 없으면 비율 기반 fallback
+                    const scale = capturedScreenWidth / window.innerWidth;
+                    scaledWidth = miniWidth * scale;
+                    scaledHeight = miniHeight * scale;
+                    miniX = ((safeX + miniWidth) / window.innerWidth) * capturedScreenWidth - scaledWidth;
+                    miniY = ((safeY + miniHeight) / window.innerHeight) * capturedScreenHeight - scaledHeight;
+                }
+            } else {
+                // 스크린 캡쳐 없음: 뷰포트 비율로 매핑 (기존 로직)
+                const scaleX = compositeCanvas.width / window.innerWidth;
+                const scaleY = compositeCanvas.height / window.innerHeight;
+                const uniformScale = Math.min(scaleX, scaleY);
+                scaledWidth = miniWidth * uniformScale;
+                scaledHeight = miniHeight * uniformScale;
+                const rightEdge = safeX + miniWidth;
+                const bottomEdge = safeY + miniHeight;
+                miniX = (rightEdge / window.innerWidth) * compositeCanvas.width - scaledWidth;
+                miniY = (bottomEdge / window.innerHeight) * compositeCanvas.height - scaledHeight;
+            }
 
             compositeCtx.drawImage(avatarCanvas, miniX, miniY, scaledWidth, scaledHeight);
         } else {
