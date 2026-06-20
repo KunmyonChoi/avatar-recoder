@@ -7,9 +7,9 @@ body {
 }
 
 #container {
-  position: relative;
-  width: 100vw;
-  height: 100vh;
+  /* position: fixed + inset: 0 으로 Dock/IME 전환 시 100vw 변화에 의한 레이아웃 시프트 방지 */
+  position: fixed;
+  inset: 0;
 }
 
 /* --- Layout Container --- */
