@@ -1913,9 +1913,14 @@ function startRecording() {
                 }
             } else if (capturedScreenWidth > 0) {
                 // 캡쳐 해상도가 확정된 경우: canvas = capturedScreenWidth×capturedScreenHeight
-                // live videoWidth를 읽으면 OS 이벤트로 순간 변할 때 drawX가 0이 아니게 되어 화면이 밀림
-                // → 항상 캔버스 전체를 꽉 채워 그려서 aspect-ratio 재계산을 건너뜀
-                compositeCtx.drawImage(screenBg, 0, 0, compositeCanvas.width, compositeCanvas.height);
+                // 5인수 drawImage는 object-fit:contain 레터박스를 포함할 수 있어
+                // 뷰포트 변화 시 왼쪽 빈공간 + 내용 압축 현상 발생.
+                // 9인수 형식으로 소스 영역을 명시해 CSS 표현을 완전히 우회.
+                compositeCtx.drawImage(
+                    screenBg,
+                    0, 0, capturedScreenWidth, capturedScreenHeight,
+                    0, 0, compositeCanvas.width, compositeCanvas.height
+                );
             } else {
                 // 스크린 캡쳐 없이 녹화 (아바타만): aspect-ratio 유지해서 중앙 정렬
                 const videoAspect = screenBg.videoWidth / screenBg.videoHeight;
