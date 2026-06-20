@@ -1911,8 +1911,13 @@ function startRecording() {
                         compositeCtx.drawImage(screenBg, sx, sy, sw, sh, 0, 0, compositeCanvas.width, compositeCanvas.height);
                     }
                 }
+            } else if (capturedScreenWidth > 0) {
+                // 캡쳐 해상도가 확정된 경우: canvas = capturedScreenWidth×capturedScreenHeight
+                // live videoWidth를 읽으면 OS 이벤트로 순간 변할 때 drawX가 0이 아니게 되어 화면이 밀림
+                // → 항상 캔버스 전체를 꽉 채워 그려서 aspect-ratio 재계산을 건너뜀
+                compositeCtx.drawImage(screenBg, 0, 0, compositeCanvas.width, compositeCanvas.height);
             } else {
-                // 줌 없음: 기존 aspect-ratio 유지 그리기
+                // 스크린 캡쳐 없이 녹화 (아바타만): aspect-ratio 유지해서 중앙 정렬
                 const videoAspect = screenBg.videoWidth / screenBg.videoHeight;
                 const canvasAspect = compositeCanvas.width / compositeCanvas.height;
                 let drawWidth, drawHeight, drawX, drawY;
