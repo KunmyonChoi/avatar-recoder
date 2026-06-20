@@ -142,6 +142,7 @@ let mediaRecorder = null;            // 녹화기
 let recordedChunks = [];             // 녹화 데이터
 let isMiniAvatar = false;            // 미니 아바타 모드
 let miniAvatarPosition = { x: null, y: null };  // 미니 아바타 위치
+let isAvatarVisible = true;          // 아바타 표시 여부
 
 // --- Screen Zoom ---
 let screenZoom = 1;
@@ -1076,6 +1077,11 @@ function setupScreenCaptureControls() {
     if (toggleAvatarSizeBtn) {
         toggleAvatarSizeBtn.addEventListener('click', toggleAvatarSize);
     }
+
+    const toggleAvatarVisBtn = document.getElementById('toggle-avatar-visibility');
+    if (toggleAvatarVisBtn) {
+        toggleAvatarVisBtn.addEventListener('click', toggleAvatarVisibility);
+    }
     if (toggleMicBtn) {
         toggleMicBtn.addEventListener('click', toggleMicrophone);
     }
@@ -1376,6 +1382,21 @@ function toggleAvatarSize() {
             }
         }
     }, 50);
+}
+
+function toggleAvatarVisibility() {
+    isAvatarVisible = !isAvatarVisible;
+
+    const btn = document.getElementById('toggle-avatar-visibility');
+    const sceneWrapper = document.getElementById('scene-wrapper');
+
+    if (btn) {
+        btn.innerHTML = isAvatarVisible ? 'Avatar<br>ON' : 'Avatar<br>OFF';
+        btn.classList.toggle('active', !isAvatarVisible);
+    }
+    if (sceneWrapper) {
+        sceneWrapper.style.visibility = isAvatarVisible ? '' : 'hidden';
+    }
 }
 
 // 드래그&드롭 기능
@@ -1880,8 +1901,8 @@ function startRecording() {
             }
         }
 
-        // 2. 아바타 캔버스 그리기
-        if (isMiniAvatar) {
+        // 2. 아바타 캔버스 그리기 (표시 상태일 때만)
+        if (isAvatarVisible && isMiniAvatar) {
             // 미니 모드: 현재 위치에 맞춰 그리기
             const miniWidth = 300;
             const miniHeight = 400;
@@ -1931,7 +1952,7 @@ function startRecording() {
             }
 
             compositeCtx.drawImage(avatarCanvas, miniX, miniY, scaledWidth, scaledHeight);
-        } else {
+        } else if (isAvatarVisible) {
             // 풀 모드: 비율 유지하며 하단 정렬 (프리뷰와 동일하게)
             const avatarAspect = avatarCanvas.width / avatarCanvas.height;
             const canvasAspect = compositeCanvas.width / compositeCanvas.height;
