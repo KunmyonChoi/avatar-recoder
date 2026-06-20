@@ -160,6 +160,20 @@ let capturedScreenWidth = 0;     // 캡쳐된 화면 실제 너비
 let capturedScreenHeight = 0;    // 캡쳐된 화면 실제 높이
 let prevRendererSize = null;     // 세로 모드 적응 전 렌더러 크기 저장
 
+// --- Stable Window Dimensions (debounced) ---
+// window.innerWidth/Height를 매 프레임 직접 읽으면 Dock 등 시스템 UI 변화에 즉시 반응해
+// compositeFrame / 대화 렌더링에서 출렁임이 발생한다. 150ms debounce로 안정화.
+let stableWindowWidth = window.innerWidth;
+let stableWindowHeight = window.innerHeight;
+let windowResizeTimer = null;
+window.addEventListener('resize', () => {
+    clearTimeout(windowResizeTimer);
+    windowResizeTimer = setTimeout(() => {
+        stableWindowWidth = window.innerWidth;
+        stableWindowHeight = window.innerHeight;
+    }, 150);
+});
+
 // --- Audio ---
 let micStream = null;                // 마이크 스트림
 let isMicEnabled = false;            // 마이크 활성화 상태
@@ -250,8 +264,8 @@ function drawChatMessagesToCanvas(ctx, canvasWidth, canvasHeight) {
     let centerX, baseY;
     if (isMiniAvatar && miniAvatarPosition.x !== null) {
         // Mini avatar 모드: 아바타 머리 근처
-        const scaleX = canvasWidth / window.innerWidth;
-        const scaleY = canvasHeight / window.innerHeight;
+        const scaleX = canvasWidth / stableWindowWidth;
+        const scaleY = canvasHeight / stableWindowHeight;
         const avatarWidth = 300 * scaleX;
         centerX = (miniAvatarPosition.x * scaleX) + avatarWidth / 2;
         baseY = (miniAvatarPosition.y * scaleY) + 50; // 아바타 상단 근처
@@ -571,8 +585,8 @@ function drawCaptionToCanvas(ctx, canvasWidth, canvasHeight) {
     let x, y;
     if (isMiniAvatar && miniAvatarPosition.x !== null) {
         // Mini avatar 모드: 아바타 몸통 위치에 표시
-        const scaleX = canvasWidth / window.innerWidth;
-        const scaleY = canvasHeight / window.innerHeight;
+        const scaleX = canvasWidth / stableWindowWidth;
+        const scaleY = canvasHeight / stableWindowHeight;
         const avatarWidth = 300 * scaleX;
         const avatarHeight = 400 * scaleY;
         x = (miniAvatarPosition.x * scaleX) + avatarWidth / 2;
@@ -745,8 +759,8 @@ function drawDialogueToCanvas(ctx, canvasWidth, canvasHeight) {
 
     let centerX, baseY;
     if (isMiniAvatar && miniAvatarPosition.x !== null) {
-        const scaleX = canvasWidth / window.innerWidth;
-        const scaleY = canvasHeight / window.innerHeight;
+        const scaleX = canvasWidth / stableWindowWidth;
+        const scaleY = canvasHeight / stableWindowHeight;
         centerX = (miniAvatarPosition.x * scaleX) + 150 * scaleX;
         baseY = (miniAvatarPosition.y * scaleY) + 250 * scaleY;
     } else {
@@ -1878,8 +1892,8 @@ function startRecording() {
                 const renderRect = getScreenVideoRenderRect(screenBg);
                 if (renderRect) {
                     const { rx, ry, rw, rh } = renderRect;
-                    const W = window.innerWidth;
-                    const H = window.innerHeight;
+                    const W = stableWindowWidth;
+                    const H = stableWindowHeight;
                     const vw = screenBg.videoWidth;
                     const vh = screenBg.videoHeight;
 
@@ -1923,9 +1937,13 @@ function startRecording() {
             const miniWidth = 300;
             const miniHeight = 400;
 
+            // 안정 캐시 값 사용 (Dock 등 시스템 UI 변화로 인한 순간 출렁임 방지)
+            const winW = stableWindowWidth;
+            const winH = stableWindowHeight;
+
             // 현재 창 크기에 맞게 위치 클램프 (창 크기 변경 대응)
-            const clampedX = Math.min(miniAvatarPosition.x || 0, window.innerWidth - miniWidth);
-            const clampedY = Math.min(miniAvatarPosition.y || 0, window.innerHeight - miniHeight);
+            const clampedX = Math.min(miniAvatarPosition.x || 0, winW - miniWidth);
+            const clampedY = Math.min(miniAvatarPosition.y || 0, winH - miniHeight);
             const safeX = Math.max(0, clampedX);
             const safeY = Math.max(0, clampedY);
 
@@ -1948,23 +1966,23 @@ function startRecording() {
                     miniY = ((bottomEdge - ry) / rh) * capturedScreenHeight - scaledHeight;
                 } else {
                     // 렌더 rect 없으면 비율 기반 fallback
-                    const scale = capturedScreenWidth / window.innerWidth;
+                    const scale = capturedScreenWidth / winW;
                     scaledWidth = miniWidth * scale;
                     scaledHeight = miniHeight * scale;
-                    miniX = ((safeX + miniWidth) / window.innerWidth) * capturedScreenWidth - scaledWidth;
-                    miniY = ((safeY + miniHeight) / window.innerHeight) * capturedScreenHeight - scaledHeight;
+                    miniX = ((safeX + miniWidth) / winW) * capturedScreenWidth - scaledWidth;
+                    miniY = ((safeY + miniHeight) / winH) * capturedScreenHeight - scaledHeight;
                 }
             } else {
                 // 스크린 캡쳐 없음: 뷰포트 비율로 매핑 (기존 로직)
-                const scaleX = compositeCanvas.width / window.innerWidth;
-                const scaleY = compositeCanvas.height / window.innerHeight;
+                const scaleX = compositeCanvas.width / winW;
+                const scaleY = compositeCanvas.height / winH;
                 const uniformScale = Math.min(scaleX, scaleY);
                 scaledWidth = miniWidth * uniformScale;
                 scaledHeight = miniHeight * uniformScale;
                 const rightEdge = safeX + miniWidth;
                 const bottomEdge = safeY + miniHeight;
-                miniX = (rightEdge / window.innerWidth) * compositeCanvas.width - scaledWidth;
-                miniY = (bottomEdge / window.innerHeight) * compositeCanvas.height - scaledHeight;
+                miniX = (rightEdge / winW) * compositeCanvas.width - scaledWidth;
+                miniY = (bottomEdge / winH) * compositeCanvas.height - scaledHeight;
             }
 
             compositeCtx.drawImage(avatarCanvas, miniX, miniY, scaledWidth, scaledHeight);
