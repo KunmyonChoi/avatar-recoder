@@ -2231,8 +2231,12 @@ function setupScene(canvas) {
         console.log('[WebGL] Context restored');
     });
 
+    // IME 전환 등 순간적 레이아웃 변화에 의한 renderer 리사이즈 방지 (debounce 150ms)
+    let rendererResizeTimer = null;
     const resizeObserver = new ResizeObserver(() => {
-        if (sceneWrapper) {
+        if (!sceneWrapper) return;
+        clearTimeout(rendererResizeTimer);
+        rendererResizeTimer = setTimeout(() => {
             const newWidth = sceneWrapper.clientWidth;
             const newHeight = sceneWrapper.clientHeight;
             if (newWidth > 0 && newHeight > 0) {
@@ -2240,7 +2244,7 @@ function setupScene(canvas) {
                 camera.updateProjectionMatrix();
                 renderer.setSize(newWidth, newHeight);
             }
-        }
+        }, 150);
     });
     if (sceneWrapper) resizeObserver.observe(sceneWrapper);
 }
