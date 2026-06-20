@@ -693,6 +693,62 @@ body.dialogue-enabled.input-typing #dialogue-input-container {
 .dev-controls:hover .dev-options {
   display: block;
 }
+
+/* --- Avatar Controls (popup panel) --- */
+.avatar-controls {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.avatar-options {
+  display: none;
+  position: absolute;
+  bottom: calc(100% - 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(40, 40, 40, 0.95);
+  border-radius: 12px;
+  padding: 12px;
+  padding-bottom: 20px;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+}
+
+.avatar-controls:hover .avatar-options {
+  display: block;
+}
+
+.avatar-options #avatar-select-dropdown {
+  width: 100%;
+  height: 32px;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+}
+
+.avatar-options #avatar-select-dropdown option {
+  background: #333;
+  color: white;
+}
+
+.avatar-options #load-custom-avatar {
+  width: 100%;
+  padding: 6px 10px !important;
+  font-size: 12px !important;
+  border-radius: 8px !important;
+  background: rgba(255, 220, 100, 0.35) !important;
+  color: white !important;
+  border: 1px dashed rgba(255, 200, 50, 0.7) !important;
+  cursor: pointer;
+}
+
 /* --- Mobile Mode --- */
 body.mobile-mode #controls {
   padding: 8px 12px;

@@ -899,19 +899,6 @@ async function init() {
     updateView();
     updateDevOptions();
 
-    const toggleBodyBtn = document.getElementById('toggle-body');
-    if (toggleBodyBtn) {
-        toggleBodyBtn.addEventListener('click', () => {
-            BODY_TRACKING_ENABLED = !BODY_TRACKING_ENABLED;
-            toggleBodyBtn.innerHTML = BODY_TRACKING_ENABLED ? "Pose<br>ON" : "Pose<br>OFF";
-            // Body tracking 비활성화 시 팔 상태 리셋
-            if (!BODY_TRACKING_ENABLED) {
-                leftArmActive = false;
-                rightArmActive = false;
-            }
-        });
-    }
-
     // 아바타 드롭다운
     const avatarDropdown = document.getElementById('avatar-select-dropdown');
     if (avatarDropdown) {
@@ -1066,7 +1053,6 @@ async function init() {
 // ============================================================
 function setupScreenCaptureControls() {
     const toggleScreenBtn = document.getElementById('toggle-screen');
-    const toggleAvatarSizeBtn = document.getElementById('toggle-avatar-size');
     const toggleMicBtn = document.getElementById('toggle-mic');
     const toggleRecordBtn = document.getElementById('toggle-record');
     const toggleCameraBtn = document.getElementById('toggle-camera');
@@ -1074,14 +1060,7 @@ function setupScreenCaptureControls() {
     if (toggleScreenBtn) {
         toggleScreenBtn.addEventListener('click', toggleScreenCapture);
     }
-    if (toggleAvatarSizeBtn) {
-        toggleAvatarSizeBtn.addEventListener('click', toggleAvatarSize);
-    }
-
-    const toggleAvatarVisBtn = document.getElementById('toggle-avatar-visibility');
-    if (toggleAvatarVisBtn) {
-        toggleAvatarVisBtn.addEventListener('click', toggleAvatarVisibility);
-    }
+    setupAvatarControls();
     if (toggleMicBtn) {
         toggleMicBtn.addEventListener('click', toggleMicrophone);
     }
@@ -1334,12 +1313,7 @@ function getAudioLevel(analyser) {
 function toggleAvatarSize() {
     isMiniAvatar = !isMiniAvatar;
 
-    const btn = document.getElementById('toggle-avatar-size');
     const sceneWrapper = document.getElementById('scene-wrapper');
-
-    if (btn) {
-        btn.innerHTML = isMiniAvatar ? 'Avatar<br>Mini' : 'Avatar<br>Full';
-    }
 
     if (isMiniAvatar) {
         document.body.classList.add('mini-avatar');
@@ -1382,21 +1356,64 @@ function toggleAvatarSize() {
             }
         }
     }, 50);
+    syncAvatarOptionsUI();
 }
 
 function toggleAvatarVisibility() {
     isAvatarVisible = !isAvatarVisible;
 
-    const btn = document.getElementById('toggle-avatar-visibility');
     const sceneWrapper = document.getElementById('scene-wrapper');
-
-    if (btn) {
-        btn.innerHTML = isAvatarVisible ? 'Avatar<br>ON' : 'Avatar<br>OFF';
-        btn.classList.toggle('active', !isAvatarVisible);
-    }
     if (sceneWrapper) {
         sceneWrapper.style.visibility = isAvatarVisible ? '' : 'hidden';
     }
+    syncAvatarOptionsUI();
+}
+
+function syncAvatarOptionsUI() {
+    // Size 옵션 버튼 동기화
+    document.querySelectorAll('[data-avatar-size]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.avatarSize === (isMiniAvatar ? 'mini' : 'full'));
+    });
+    // Pose 옵션 버튼 동기화
+    document.querySelectorAll('[data-avatar-pose]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.avatarPose === (BODY_TRACKING_ENABLED ? 'on' : 'off'));
+    });
+    // 메인 가시성 버튼 동기화
+    const visBtn = document.getElementById('toggle-avatar-visibility');
+    if (visBtn) {
+        visBtn.innerHTML = isAvatarVisible ? 'Avatar<br>ON' : 'Avatar<br>OFF';
+        visBtn.classList.toggle('active', !isAvatarVisible);
+    }
+}
+
+function setupAvatarControls() {
+    // 메인 버튼: 가시성 토글
+    const visBtn = document.getElementById('toggle-avatar-visibility');
+    if (visBtn) visBtn.addEventListener('click', toggleAvatarVisibility);
+
+    // Size 옵션 버튼
+    document.querySelectorAll('[data-avatar-size]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const shouldBeMini = btn.dataset.avatarSize === 'mini';
+            if (isMiniAvatar !== shouldBeMini) toggleAvatarSize();
+            else syncAvatarOptionsUI(); // 이미 같은 상태면 UI만 동기화
+        });
+    });
+
+    // Pose 옵션 버튼
+    document.querySelectorAll('[data-avatar-pose]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const enable = btn.dataset.avatarPose === 'on';
+            if (BODY_TRACKING_ENABLED !== enable) {
+                BODY_TRACKING_ENABLED = enable;
+                if (!BODY_TRACKING_ENABLED) {
+                    leftArmActive = false;
+                    rightArmActive = false;
+                }
+            }
+            syncAvatarOptionsUI();
+        });
+    });
 }
 
 // 드래그&드롭 기능
@@ -1801,8 +1818,7 @@ function stopScreenCapture() {
     if (isMiniAvatar) {
         isMiniAvatar = false;
         document.body.classList.remove('mini-avatar');
-        const btn = document.getElementById('toggle-avatar-size');
-        if (btn) btn.innerHTML = 'Avatar<br>Full';
+        syncAvatarOptionsUI();
 
         const sceneWrapper = document.getElementById('scene-wrapper');
         if (sceneWrapper) {
