@@ -10,7 +10,7 @@ const recorderWindow = window.open(
     '?mode=popup' +
     '&origin=' + encodeURIComponent(window.location.origin) +
     '&session=' + encodeURIComponent(mySessionId),   // 선택
-  'avatar-recorder',
+  'avatar-recoder',
   'width=1280,height=800,noopener=0'                 // noopener=0 필수 (opener 참조 유지)
 );
 ```
@@ -37,29 +37,29 @@ window.addEventListener('message', (e) => {
   const { type, sessionId, blob, mimeType, filename } = e.data;
 
   switch (type) {
-    case 'avatar-recorder:ready':
+    case 'avatar-recoder:ready':
       // 앱 초기화 완료. 이제 start 명령 전송 가능
       break;
 
-    case 'avatar-recorder:recording-started':
+    case 'avatar-recoder:recording-started':
       // 녹화가 시작됨
       break;
 
-    case 'avatar-recorder:recording-stopped':
+    case 'avatar-recoder:recording-stopped':
       // 녹화 중지됨 (result 메시지와 함께 옴)
       break;
 
-    case 'avatar-recorder:result':
+    case 'avatar-recoder:result':
       // blob: Blob (video/webm), filename: string
       const url = URL.createObjectURL(blob);
       // 업로드하거나 <video>에 연결하거나 다운로드
       break;
 
-    case 'avatar-recorder:cancelled':
+    case 'avatar-recoder:cancelled':
       // 사용자가 창을 닫거나 cancel 명령으로 취소됨
       break;
 
-    case 'avatar-recorder:error':
+    case 'avatar-recoder:error':
       // e.data.message: 오류 설명
       break;
   }
@@ -70,12 +70,12 @@ window.addEventListener('message', (e) => {
 
 | type | 데이터 필드 | 설명 |
 |------|------------|------|
-| `avatar-recorder:ready` | `sessionId` | 초기화 완료, 명령 수신 대기 중 |
-| `avatar-recorder:recording-started` | `sessionId` | 녹화 시작됨 |
-| `avatar-recorder:recording-stopped` | `sessionId` | 녹화 중지됨 |
-| `avatar-recorder:result` | `sessionId`, `blob`, `mimeType`, `filename` | 녹화 결과 파일 |
-| `avatar-recorder:cancelled` | `sessionId` | 취소 또는 창 닫힘 |
-| `avatar-recorder:error` | `sessionId`, `message` | 오류 발생 |
+| `avatar-recoder:ready` | `sessionId` | 초기화 완료, 명령 수신 대기 중 |
+| `avatar-recoder:recording-started` | `sessionId` | 녹화 시작됨 |
+| `avatar-recoder:recording-stopped` | `sessionId` | 녹화 중지됨 |
+| `avatar-recoder:result` | `sessionId`, `blob`, `mimeType`, `filename` | 녹화 결과 파일 |
+| `avatar-recoder:cancelled` | `sessionId` | 취소 또는 창 닫힘 |
+| `avatar-recoder:error` | `sessionId`, `message` | 오류 발생 |
 
 ---
 
@@ -84,19 +84,19 @@ window.addEventListener('message', (e) => {
 ```js
 // 녹화 시작
 recorderWindow.postMessage(
-  { type: 'avatar-recorder:start' },
+  { type: 'avatar-recoder:start' },
   'https://avatar-recoder.netlify.app'
 );
 
 // 녹화 중지 (결과 blob이 result 메시지로 반환됨)
 recorderWindow.postMessage(
-  { type: 'avatar-recorder:stop' },
+  { type: 'avatar-recoder:stop' },
   'https://avatar-recoder.netlify.app'
 );
 
 // 취소 (결과 없이 창 닫힘)
 recorderWindow.postMessage(
-  { type: 'avatar-recorder:cancel' },
+  { type: 'avatar-recoder:cancel' },
   'https://avatar-recoder.netlify.app'
 );
 ```
@@ -116,7 +116,7 @@ function openRecorder(sessionId) {
   });
   recorderWindow = window.open(
     `https://avatar-recoder.netlify.app?${params}`,
-    'avatar-recorder',
+    'avatar-recoder',
     'width=1280,height=800,noopener=0'
   );
 }
@@ -125,15 +125,15 @@ window.addEventListener('message', (e) => {
   if (e.origin !== 'https://avatar-recoder.netlify.app') return;
   const { type, sessionId, blob, filename } = e.data;
 
-  if (type === 'avatar-recorder:ready') {
+  if (type === 'avatar-recoder:ready') {
     // 준비 완료 → 바로 녹화 시작
     recorderWindow.postMessage(
-      { type: 'avatar-recorder:start' },
+      { type: 'avatar-recoder:start' },
       'https://avatar-recoder.netlify.app'
     );
   }
 
-  if (type === 'avatar-recorder:result') {
+  if (type === 'avatar-recoder:result') {
     // 예: FormData로 서버 업로드
     const formData = new FormData();
     formData.append('video', blob, filename);
@@ -142,7 +142,7 @@ window.addEventListener('message', (e) => {
     recorderWindow?.close();
   }
 
-  if (type === 'avatar-recorder:cancelled') {
+  if (type === 'avatar-recoder:cancelled') {
     console.log('Recording cancelled for session:', sessionId);
   }
 });

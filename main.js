@@ -892,11 +892,11 @@ function initIntegrationMode() {
     window.addEventListener('message', (e) => {
         if (e.origin !== _integrationParams.origin) return;
         const { type } = e.data || {};
-        if (type === 'avatar-recorder:start') {
+        if (type === 'avatar-recoder:start') {
             if (!mediaRecorder || mediaRecorder.state !== 'recording') startRecording();
-        } else if (type === 'avatar-recorder:stop') {
+        } else if (type === 'avatar-recoder:stop') {
             if (mediaRecorder && mediaRecorder.state === 'recording') stopRecording();
-        } else if (type === 'avatar-recorder:cancel') {
+        } else if (type === 'avatar-recoder:cancel') {
             recordedChunks = [];
             window.close();
         }
@@ -905,12 +905,12 @@ function initIntegrationMode() {
     // 창 닫힘 시 cancelled 알림
     window.addEventListener('beforeunload', () => {
         if (!mediaRecorder || mediaRecorder.state !== 'recording') {
-            _postToOpener({ type: 'avatar-recorder:cancelled', sessionId: _integrationParams.sessionId });
+            _postToOpener({ type: 'avatar-recoder:cancelled', sessionId: _integrationParams.sessionId });
         }
     });
 
     // opener에 준비 완료 신호 전송
-    _postToOpener({ type: 'avatar-recorder:ready', sessionId: _integrationParams.sessionId });
+    _postToOpener({ type: 'avatar-recoder:ready', sessionId: _integrationParams.sessionId });
 
     // autoRecord 옵션 처리
     if (_integrationParams.autoRecord) {
@@ -2196,7 +2196,7 @@ function startRecording() {
 
     mediaRecorder.start(100);  // 100ms마다 데이터 수집
 
-    _postToOpener({ type: 'avatar-recorder:recording-started', sessionId: _integrationParams?.sessionId ?? null });
+    _postToOpener({ type: 'avatar-recoder:recording-started', sessionId: _integrationParams?.sessionId ?? null });
 
     // 녹화 중 컨트롤바 숨기기
     document.body.classList.add('recording');
@@ -2239,13 +2239,13 @@ function downloadRecording() {
     if (isIntegrationMode && window.opener) {
         const filename = `avatar-recording-${Date.now()}.webm`;
         _postToOpener({
-            type: 'avatar-recorder:result',
+            type: 'avatar-recoder:result',
             sessionId: _integrationParams.sessionId,
             blob,
             mimeType: 'video/webm',
             filename,
         });
-        _postToOpener({ type: 'avatar-recorder:recording-stopped', sessionId: _integrationParams.sessionId });
+        _postToOpener({ type: 'avatar-recoder:recording-stopped', sessionId: _integrationParams.sessionId });
         return;
     }
 
