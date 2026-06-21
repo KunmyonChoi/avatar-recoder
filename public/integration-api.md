@@ -1,12 +1,12 @@
 # Avatar Recorder — Cross-Origin Integration API
 
-앱 URL: `https://avatar-recorder.netlify.app`
+앱 URL: `https://avatar-recoder.netlify.app`
 
 ## 1. 팝업 열기
 
 ```js
 const recorderWindow = window.open(
-  'https://avatar-recorder.netlify.app' +
+  'https://avatar-recoder.netlify.app' +
     '?mode=popup' +
     '&origin=' + encodeURIComponent(window.location.origin) +
     '&session=' + encodeURIComponent(mySessionId),   // 선택
@@ -29,11 +29,11 @@ const recorderWindow = window.open(
 ## 2. 메시지 수신 (avatar-recorder → 호출 앱)
 
 `window.addEventListener('message', handler)` 로 수신합니다.
-`e.origin`이 `https://avatar-recorder.netlify.app`인지 반드시 검증하세요.
+`e.origin`이 `https://avatar-recoder.netlify.app`인지 반드시 검증하세요.
 
 ```js
 window.addEventListener('message', (e) => {
-  if (e.origin !== 'https://avatar-recorder.netlify.app') return;
+  if (e.origin !== 'https://avatar-recoder.netlify.app') return;
   const { type, sessionId, blob, mimeType, filename } = e.data;
 
   switch (type) {
@@ -85,19 +85,19 @@ window.addEventListener('message', (e) => {
 // 녹화 시작
 recorderWindow.postMessage(
   { type: 'avatar-recorder:start' },
-  'https://avatar-recorder.netlify.app'
+  'https://avatar-recoder.netlify.app'
 );
 
 // 녹화 중지 (결과 blob이 result 메시지로 반환됨)
 recorderWindow.postMessage(
   { type: 'avatar-recorder:stop' },
-  'https://avatar-recorder.netlify.app'
+  'https://avatar-recoder.netlify.app'
 );
 
 // 취소 (결과 없이 창 닫힘)
 recorderWindow.postMessage(
   { type: 'avatar-recorder:cancel' },
-  'https://avatar-recorder.netlify.app'
+  'https://avatar-recoder.netlify.app'
 );
 ```
 
@@ -115,21 +115,21 @@ function openRecorder(sessionId) {
     session: sessionId,
   });
   recorderWindow = window.open(
-    `https://avatar-recorder.netlify.app?${params}`,
+    `https://avatar-recoder.netlify.app?${params}`,
     'avatar-recorder',
     'width=1280,height=800,noopener=0'
   );
 }
 
 window.addEventListener('message', (e) => {
-  if (e.origin !== 'https://avatar-recorder.netlify.app') return;
+  if (e.origin !== 'https://avatar-recoder.netlify.app') return;
   const { type, sessionId, blob, filename } = e.data;
 
   if (type === 'avatar-recorder:ready') {
     // 준비 완료 → 바로 녹화 시작
     recorderWindow.postMessage(
       { type: 'avatar-recorder:start' },
-      'https://avatar-recorder.netlify.app'
+      'https://avatar-recoder.netlify.app'
     );
   }
 
@@ -153,6 +153,6 @@ window.addEventListener('message', (e) => {
 ## 5. 보안 주의사항
 
 - `window.open()`의 feature string에 `noopener=0`을 명시해야 `window.opener` 참조가 유지됩니다 (기본값은 `noopener`).
-- 수신 메시지의 `e.origin`을 `https://avatar-recorder.netlify.app`으로 반드시 검증하세요.
+- 수신 메시지의 `e.origin`을 `https://avatar-recoder.netlify.app`으로 반드시 검증하세요.
 - `blob` 객체는 수신 탭의 메모리에만 존재합니다. `URL.createObjectURL()` 사용 후 `URL.revokeObjectURL()`로 해제하세요.
 - `session` 파라미터를 활용해 복수의 동시 세션을 구분할 수 있습니다.
