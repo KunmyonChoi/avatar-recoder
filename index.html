@@ -20,6 +20,45 @@
       <div id="scene-wrapper">
         <canvas id="output_canvas"></canvas>
       </div>
+      <!-- Blackout Overlay -->
+      <div id="blackout-overlay"></div>
+      <!-- Drawing Canvas (topmost, receives pointer events in draw mode) -->
+      <canvas id="drawing-canvas"></canvas>
+      <!-- Drawing Toolbar -->
+      <div id="drawing-toolbar">
+        <div id="drawing-toolbar-row1">
+          <button class="draw-tool-btn active" data-tool="pen" title="Pen (P)">✏</button>
+          <button class="draw-tool-btn" data-tool="highlighter" title="Highlighter (H)">══</button>
+          <button class="draw-tool-btn" data-tool="arrow" title="Arrow (A)">→</button>
+          <button class="draw-tool-btn" data-tool="text" title="Text (T)">T</button>
+          <button class="draw-tool-btn" data-tool="eraser" title="Eraser (E)">◌</button>
+          <span class="draw-divider">|</span>
+          <button class="draw-color-btn active" data-color="#ff3b30" style="background:#ff3b30" title="Red"></button>
+          <button class="draw-color-btn" data-color="#ffcc00" style="background:#ffcc00" title="Yellow"></button>
+          <button class="draw-color-btn" data-color="#34c759" style="background:#34c759" title="Green"></button>
+          <button class="draw-color-btn" data-color="#007aff" style="background:#007aff" title="Blue"></button>
+          <button class="draw-color-btn" data-color="#ffffff" style="background:#ffffff" title="White"></button>
+          <button class="draw-color-btn" data-color="#000000" style="background:#000000" title="Black"></button>
+          <span class="draw-divider">|</span>
+          <button class="draw-size-btn" data-size="S" title="Small">S</button>
+          <button class="draw-size-btn active" data-size="M" title="Medium">M</button>
+          <button class="draw-size-btn" data-size="L" title="Large">L</button>
+          <span class="draw-divider">|</span>
+          <button id="draw-fade-btn" title="Fade annotations">FADE</button>
+          <button id="draw-blackout-btn" title="Blackout background (B)">BG</button>
+          <span class="draw-divider">|</span>
+          <button id="draw-undo-btn" title="Undo (Cmd/Ctrl+Z)">↩</button>
+          <button id="draw-clear-btn" title="Clear all (C)">✕</button>
+        </div>
+        <div id="drawing-toolbar-row2">
+          <button class="draw-textstyle-btn" data-textstyle="shadow" title="Shadow">Shadow</button>
+          <button class="draw-textstyle-btn" data-textstyle="background" title="Background">BG</button>
+          <span class="draw-divider">|</span>
+          <button id="draw-font-decrease" title="Decrease font size">−</button>
+          <span id="draw-font-size-label">24px</span>
+          <button id="draw-font-increase" title="Increase font size">+</button>
+        </div>
+      </div>
       <!-- Screen Zoom Indicator -->
       <div id="screen-zoom-indicator">1.0×</div>
       <!-- Dialogue Overlay (unified chat/caption) -->
@@ -35,6 +74,7 @@
       <!-- Screen/Recording 제어 -->
       <button id="toggle-record">Start<br>Record</button>
       <button id="toggle-screen">Screen<br>Capture</button>
+      <button id="toggle-draw" disabled>Draw<br>OFF</button>
       <span class="divider">|</span>
       <!-- 장치 제어 (Camera, Mic) -->
       <button id="toggle-camera">Cam<br>ON</button>

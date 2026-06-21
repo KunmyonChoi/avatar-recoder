@@ -926,6 +926,780 @@ function initIntegrationMode() {
     }
 }
 
+// ============================================================
+// Drawing Annotation System
+// ============================================================
+
+// --- Drawing State ---
+let isDrawModeOn = false;
+let isBlackout = false;
+let isFadeEnabled = false;
+
+let drawCurrentTool = 'pen';   // 'pen' | 'highlighter' | 'arrow' | 'text' | 'eraser'
+let drawCurrentColor = '#ff3b30';
+let drawCurrentSize = 'M';
+let drawCurrentTextStyle = null; // null | 'shadow' | 'background'
+let drawCurrentFontSize = 24;
+
+let drawStrokes = [];   // committed strokes
+let drawUndoStack = []; // undo history (stroke objects)
+let activeStroke = null; // stroke being drawn right now
+
+// Arrow drawing state
+let arrowStartX = null;
+let arrowStartY = null;
+
+// Text tool state
+let textComposingEl = null;    // the <textarea> DOM element
+let textReEditTarget = null;   // stroke being re-edited
+let textLastTapTime = 0;
+let textLastTapStroke = null;
+
+let drawingCanvasEl = null;
+let drawingCanvasCtx = null;
+let drawRAFId = null;
+
+const DRAW_LINE_WIDTHS = {
+    pen:         { S: 2,  M: 4,  L: 8  },
+    highlighter: { S: 12, M: 20, L: 32 },
+    arrow:       { S: 2,  M: 4,  L: 6  },
+    eraser:      { S: 20, M: 40, L: 60 },
+};
+const DRAW_TEXT_SIZES = { S: 16, M: 24, L: 36 };
+
+const STROKE_FADE_DELAY = 3000;    // ms before pen/arrow fade starts
+const STROKE_FADE_DUR   = 600;     // ms fade duration
+const TEXT_FADE_DELAY   = 10000;
+let drawNextId = 1;
+
+// ---- Utility: draw a rounded rect path (Chrome 99+ roundRect fallback) ----
+function drawRoundRect(ctx, x, y, w, h, r) {
+    if (ctx.roundRect) {
+        ctx.roundRect(x, y, w, h, r);
+    } else {
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.arcTo(x + w, y, x + w, y + r, r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+        ctx.lineTo(x + r, y + h);
+        ctx.arcTo(x, y + h, x, y + h - r, r);
+        ctx.lineTo(x, y + r);
+        ctx.arcTo(x, y, x + r, y, r);
+        ctx.closePath();
+    }
+}
+
+// ---- Render a single stroke to a canvas context ----
+// nx, ny normalization factors (canvas w/h)
+function renderStroke(ctx, stroke, nx, ny) {
+    if (stroke.renderSkip) return;
+    const op = stroke.opacity;
+    if (op <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = op;
+
+    if (stroke.type === 'pen' || stroke.type === 'highlighter') {
+        if (stroke.points.length < 2) {
+            ctx.restore();
+            return;
+        }
+        const lw = DRAW_LINE_WIDTHS[stroke.type][stroke.sizeKey];
+        ctx.lineWidth = lw * (nx / stableWindowWidth);
+        ctx.strokeStyle = stroke.color;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        if (stroke.type === 'highlighter') {
+            ctx.globalAlpha = op * 0.5;
+            ctx.lineWidth = lw * (nx / stableWindowWidth);
+        }
+        ctx.beginPath();
+        ctx.moveTo(stroke.points[0].x * nx, stroke.points[0].y * ny);
+        for (let i = 1; i < stroke.points.length; i++) {
+            ctx.lineTo(stroke.points[i].x * nx, stroke.points[i].y * ny);
+        }
+        ctx.stroke();
+
+    } else if (stroke.type === 'arrow') {
+        const lw = DRAW_LINE_WIDTHS.arrow[stroke.sizeKey];
+        const scaledLw = lw * (nx / stableWindowWidth);
+        const x1 = stroke.x1 * nx, y1 = stroke.y1 * ny;
+        const x2 = stroke.x2 * nx, y2 = stroke.y2 * ny;
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+        const headLen = Math.max(scaledLw * 5, 12 * (nx / stableWindowWidth));
+
+        ctx.strokeStyle = stroke.color;
+        ctx.fillStyle = stroke.color;
+        ctx.lineWidth = scaledLw;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // shaft
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 - Math.cos(angle) * headLen * 0.5, y2 - Math.sin(angle) * headLen * 0.5);
+        ctx.stroke();
+
+        // arrowhead
+        ctx.beginPath();
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6),
+                   y2 - headLen * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6),
+                   y2 - headLen * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+
+    } else if (stroke.type === 'text') {
+        const scale = nx / stableWindowWidth;
+        const fs = stroke.fontSize * scale;
+        const x = stroke.x * nx;
+        const y = stroke.y * ny;
+
+        ctx.font = `${fs}px sans-serif`;
+        ctx.textBaseline = 'top';
+
+        const lines = stroke.lines;
+        const lineHeight = fs * 1.25;
+        const totalH = lines.length * lineHeight;
+
+        // measure max line width
+        let maxW = 0;
+        for (const line of lines) {
+            const w = ctx.measureText(line).width;
+            if (w > maxW) maxW = w;
+        }
+
+        if (stroke.textStyle === 'background') {
+            const padX = fs * 0.35;
+            const padY = fs * 0.2;
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            ctx.beginPath();
+            drawRoundRect(ctx, x - padX, y - padY, maxW + padX * 2, totalH + padY * 2, fs * 0.2);
+            ctx.fill();
+            ctx.fillStyle = stroke.color;
+            for (let i = 0; i < lines.length; i++) {
+                ctx.fillText(lines[i], x, y + i * lineHeight);
+            }
+        } else {
+            // optional shadow
+            if (stroke.textStyle === 'shadow') {
+                ctx.shadowColor = 'rgba(0,0,0,0.85)';
+                ctx.shadowBlur = fs * 0.3;
+                ctx.shadowOffsetX = fs * 0.05;
+                ctx.shadowOffsetY = fs * 0.05;
+            }
+            ctx.fillStyle = stroke.color;
+            for (let i = 0; i < lines.length; i++) {
+                ctx.fillText(lines[i], x, y + i * lineHeight);
+            }
+        }
+    }
+
+    ctx.restore();
+}
+
+// ---- Render active (in-progress) stroke preview ----
+function renderActiveStroke(ctx, nx, ny) {
+    if (!activeStroke) return;
+    ctx.save();
+    ctx.globalAlpha = 1;
+
+    if (activeStroke.type === 'pen' || activeStroke.type === 'highlighter') {
+        if (activeStroke.points.length < 2) { ctx.restore(); return; }
+        const lw = DRAW_LINE_WIDTHS[activeStroke.type][activeStroke.sizeKey];
+        ctx.lineWidth = lw * (nx / stableWindowWidth);
+        ctx.strokeStyle = activeStroke.color;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        if (activeStroke.type === 'highlighter') ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(activeStroke.points[0].x * nx, activeStroke.points[0].y * ny);
+        for (let i = 1; i < activeStroke.points.length; i++) {
+            ctx.lineTo(activeStroke.points[i].x * nx, activeStroke.points[i].y * ny);
+        }
+        ctx.stroke();
+
+    } else if (activeStroke.type === 'arrow') {
+        if (arrowStartX === null) { ctx.restore(); return; }
+        const lw = DRAW_LINE_WIDTHS.arrow[activeStroke.sizeKey];
+        const scaledLw = lw * (nx / stableWindowWidth);
+        const x1 = arrowStartX * nx, y1 = arrowStartY * ny;
+        const x2 = activeStroke.x2 * nx, y2 = activeStroke.y2 * ny;
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+        const headLen = Math.max(scaledLw * 5, 12 * (nx / stableWindowWidth));
+
+        ctx.strokeStyle = activeStroke.color;
+        ctx.fillStyle = activeStroke.color;
+        ctx.lineWidth = scaledLw;
+        ctx.lineCap = 'round';
+
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 - Math.cos(angle) * headLen * 0.5, y2 - Math.sin(angle) * headLen * 0.5);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6),
+                   y2 - headLen * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6),
+                   y2 - headLen * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    ctx.restore();
+}
+
+// ---- Rendering loop for live preview canvas ----
+function drawingRenderLoop() {
+    drawRAFId = requestAnimationFrame(drawingRenderLoop);
+
+    if (!drawingCanvasEl) return;
+    const w = drawingCanvasEl.width;
+    const h = drawingCanvasEl.height;
+
+    drawingCanvasCtx.clearRect(0, 0, w, h);
+
+    const now = performance.now();
+    let anyVisible = false;
+
+    // Update fade and remove expired strokes (reverse loop for splice safety)
+    for (let i = drawStrokes.length - 1; i >= 0; i--) {
+        const s = drawStrokes[i];
+        if (isFadeEnabled && s.createdAt !== null) {
+            const delay = s.type === 'text' ? TEXT_FADE_DELAY : STROKE_FADE_DELAY;
+            const elapsed = now - s.createdAt;
+            if (elapsed >= delay + STROKE_FADE_DUR) {
+                drawStrokes.splice(i, 1);
+                continue;
+            } else if (elapsed >= delay) {
+                s.opacity = 1 - (elapsed - delay) / STROKE_FADE_DUR;
+            } else {
+                s.opacity = 1;
+            }
+        } else {
+            s.opacity = 1;
+        }
+        if (s.opacity > 0 && !s.renderSkip) anyVisible = true;
+    }
+
+    // Render all committed strokes
+    for (const s of drawStrokes) {
+        renderStroke(drawingCanvasCtx, s, w, h);
+    }
+
+    // Render active (in-progress) stroke
+    if (activeStroke) {
+        renderActiveStroke(drawingCanvasCtx, w, h);
+        anyVisible = true;
+    }
+
+    // When draw mode is off and nothing is visible, we're done (canvas stays clear)
+    if (!isDrawModeOn && !anyVisible) {
+        drawingCanvasCtx.clearRect(0, 0, w, h);
+    }
+}
+
+// ---- Render drawing layer into composite canvas for recording ----
+function renderDrawingLayer(ctx, cw, ch, now) {
+    if (drawStrokes.length === 0 && !activeStroke) return;
+
+    for (const s of drawStrokes) {
+        if (s.opacity <= 0 || s.renderSkip) continue;
+        // fade is already applied in the RAF loop; read opacity directly
+        renderStroke(ctx, s, cw, ch);
+    }
+
+    if (activeStroke) {
+        renderActiveStroke(ctx, cw, ch);
+    }
+}
+
+// ---- Eraser: delete strokes that overlap the eraser circle ----
+function eraseAt(nx, ny, sizeKey) {
+    const radius = DRAW_LINE_WIDTHS.eraser[sizeKey] / 2;
+    const normRadius = radius / stableWindowWidth;
+
+    for (let i = drawStrokes.length - 1; i >= 0; i--) {
+        const s = drawStrokes[i];
+        let hit = false;
+
+        if (s.type === 'pen' || s.type === 'highlighter') {
+            for (const pt of s.points) {
+                const dx = pt.x - nx, dy = pt.y - ny;
+                if (dx * dx + dy * dy <= normRadius * normRadius) { hit = true; break; }
+            }
+        } else if (s.type === 'arrow') {
+            const dx = s.x2 - nx, dy = s.y2 - ny;
+            const dx2 = s.x1 - nx, dy2 = s.y1 - ny;
+            if (dx * dx + dy * dy <= normRadius * normRadius ||
+                dx2 * dx2 + dy2 * dy2 <= normRadius * normRadius) hit = true;
+        } else if (s.type === 'text') {
+            const dx = s.x - nx, dy = s.y - ny;
+            if (Math.abs(dx) < 0.15 && Math.abs(dy) < 0.08) hit = true;
+        }
+
+        if (hit) {
+            drawUndoStack.push({ action: 'remove', stroke: drawStrokes[i] });
+            drawStrokes.splice(i, 1);
+        }
+    }
+}
+
+// ---- Commit the current text textarea ----
+function commitTextInput(cancel) {
+    if (!textComposingEl) return;
+    const el = textComposingEl;
+    textComposingEl = null;
+
+    if (cancel) {
+        if (textReEditTarget) {
+            textReEditTarget.renderSkip = false;
+            textReEditTarget = null;
+        }
+        el.remove();
+        return;
+    }
+
+    const rawText = el.value;
+    const lines = rawText.split('\n');
+
+    const rect = drawingCanvasEl.getBoundingClientRect();
+    const nx_pos = (parseFloat(el.style.left) - rect.left) / rect.width;
+    const ny_pos = (parseFloat(el.style.top) - rect.top) / rect.height;
+
+    if (textReEditTarget) {
+        // update existing stroke
+        textReEditTarget.lines = lines;
+        textReEditTarget.renderSkip = false;
+        textReEditTarget.createdAt = performance.now();
+        textReEditTarget = null;
+    } else {
+        const stroke = {
+            id: drawNextId++,
+            type: 'text',
+            color: drawCurrentColor,
+            textStyle: drawCurrentTextStyle,
+            fontSize: drawCurrentFontSize,
+            lines,
+            x: nx_pos,
+            y: ny_pos,
+            opacity: 1,
+            createdAt: performance.now(),
+            renderSkip: false,
+        };
+        drawStrokes.push(stroke);
+        drawUndoStack.push({ action: 'add', stroke });
+    }
+
+    el.remove();
+}
+
+// ---- Mount a textarea for text composition ----
+function mountTextInput(clientX, clientY, existingStroke) {
+    if (textComposingEl) {
+        commitTextInput(false);
+    }
+
+    const el = document.createElement('textarea');
+    el.id = 'drawing-text-input';
+    el.rows = 1;
+    el.placeholder = 'Type...';
+    el.style.left = clientX + 'px';
+    el.style.top = clientY + 'px';
+    el.style.fontSize = drawCurrentFontSize + 'px';
+    el.style.color = drawCurrentColor;
+    document.body.appendChild(el);
+    textComposingEl = el;
+
+    if (existingStroke) {
+        el.value = existingStroke.lines.join('\n');
+        textReEditTarget = existingStroke;
+        existingStroke.renderSkip = true;
+    }
+
+    el.focus();
+
+    // Auto-resize height
+    const autoResize = () => {
+        el.style.height = 'auto';
+        el.style.height = el.scrollHeight + 'px';
+    };
+    el.addEventListener('input', autoResize);
+    autoResize();
+
+    // Shift+Enter = commit, Enter = newline
+    el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && e.shiftKey) {
+            e.preventDefault();
+            commitTextInput(false);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            commitTextInput(true);
+        }
+        e.stopPropagation();
+    });
+
+    // Outside click = commit
+    const outsideClick = (e) => {
+        if (textComposingEl && e.target !== textComposingEl) {
+            commitTextInput(false);
+            document.removeEventListener('pointerdown', outsideClick, true);
+        }
+    };
+    // Delay to avoid immediate trigger from the same tap that opened the textarea
+    setTimeout(() => {
+        document.addEventListener('pointerdown', outsideClick, true);
+    }, 50);
+}
+
+// ---- Main drawing canvas pointer handlers ----
+function onDrawPointerDown(e) {
+    // Allow mini avatar drag if pointer is inside sceneWrapper
+    if (isMiniAvatar) {
+        const sceneWrapper = document.getElementById('scene-wrapper');
+        if (sceneWrapper) {
+            const r = sceneWrapper.getBoundingClientRect();
+            if (e.clientX >= r.left && e.clientX <= r.right &&
+                e.clientY >= r.top  && e.clientY <= r.bottom) {
+                onDragStart(e);
+                return;
+            }
+        }
+    }
+
+    if (!isDrawModeOn) return;
+
+    e.preventDefault();
+
+    const rect = drawingCanvasEl.getBoundingClientRect();
+    const nx = (e.clientX - rect.left) / rect.width;
+    const ny = (e.clientY - rect.top)  / rect.height;
+
+    if (drawCurrentTool === 'eraser') {
+        eraseAt(nx, ny, drawCurrentSize);
+        activeStroke = { type: 'eraser', x: nx, y: ny };
+        return;
+    }
+
+    if (drawCurrentTool === 'text') {
+        // Check double-tap for re-edit
+        const now = performance.now();
+        if (now - textLastTapTime < 300) {
+            // Double tap: find nearby text stroke
+            const hit = drawStrokes.slice().reverse().find(s => {
+                if (s.type !== 'text') return false;
+                const dx = Math.abs(s.x - nx), dy = Math.abs(s.y - ny);
+                return dx < 0.15 && dy < 0.08;
+            });
+            if (hit) {
+                textLastTapTime = 0;
+                mountTextInput(e.clientX, e.clientY, hit);
+                return;
+            }
+        }
+        textLastTapTime = now;
+        // Single tap: new text
+        if (textComposingEl) {
+            commitTextInput(false);
+        } else {
+            mountTextInput(e.clientX, e.clientY, null);
+        }
+        return;
+    }
+
+    if (drawCurrentTool === 'pen' || drawCurrentTool === 'highlighter') {
+        activeStroke = {
+            id: drawNextId++,
+            type: drawCurrentTool,
+            color: drawCurrentColor,
+            sizeKey: drawCurrentSize,
+            points: [{ x: nx, y: ny }],
+            opacity: 1,
+            createdAt: null,
+        };
+    } else if (drawCurrentTool === 'arrow') {
+        arrowStartX = nx;
+        arrowStartY = ny;
+        activeStroke = {
+            id: drawNextId++,
+            type: 'arrow',
+            color: drawCurrentColor,
+            sizeKey: drawCurrentSize,
+            x1: nx, y1: ny, x2: nx, y2: ny,
+            opacity: 1,
+            createdAt: null,
+        };
+    }
+}
+
+function onDrawPointerMove(e) {
+    if (!activeStroke) return;
+    if (activeStroke.type === 'eraser') {
+        const rect = drawingCanvasEl.getBoundingClientRect();
+        const nx = (e.clientX - rect.left) / rect.width;
+        const ny = (e.clientY - rect.top)  / rect.height;
+        eraseAt(nx, ny, drawCurrentSize);
+        activeStroke.x = nx;
+        activeStroke.y = ny;
+        return;
+    }
+
+    const rect = drawingCanvasEl.getBoundingClientRect();
+    const nx = (e.clientX - rect.left) / rect.width;
+    const ny = (e.clientY - rect.top)  / rect.height;
+
+    if (activeStroke.type === 'pen' || activeStroke.type === 'highlighter') {
+        activeStroke.points.push({ x: nx, y: ny });
+    } else if (activeStroke.type === 'arrow') {
+        activeStroke.x2 = nx;
+        activeStroke.y2 = ny;
+    }
+}
+
+function onDrawPointerUp(e) {
+    if (!activeStroke) return;
+    if (activeStroke.type === 'eraser') {
+        activeStroke = null;
+        return;
+    }
+
+    const rect = drawingCanvasEl.getBoundingClientRect();
+    const nx = (e.clientX - rect.left) / rect.width;
+    const ny = (e.clientY - rect.top)  / rect.height;
+
+    if (activeStroke.type === 'pen' || activeStroke.type === 'highlighter') {
+        if (activeStroke.points.length >= 2) {
+            activeStroke.createdAt = isFadeEnabled ? performance.now() : null;
+            drawStrokes.push(activeStroke);
+            drawUndoStack.push({ action: 'add', stroke: activeStroke });
+        }
+    } else if (activeStroke.type === 'arrow') {
+        activeStroke.x2 = nx;
+        activeStroke.y2 = ny;
+        const dx = activeStroke.x2 - activeStroke.x1;
+        const dy = activeStroke.y2 - activeStroke.y1;
+        if (dx * dx + dy * dy > 0.0001) {
+            activeStroke.createdAt = isFadeEnabled ? performance.now() : null;
+            drawStrokes.push(activeStroke);
+            drawUndoStack.push({ action: 'add', stroke: activeStroke });
+        }
+    }
+
+    activeStroke = null;
+}
+
+// ---- Drawing canvas resize sync ----
+function syncDrawingCanvasSize() {
+    if (!drawingCanvasEl) return;
+    const container = document.getElementById('preview-container');
+    if (!container) return;
+    drawingCanvasEl.width = container.clientWidth;
+    drawingCanvasEl.height = container.clientHeight;
+}
+
+// ---- Toggle draw mode ----
+function toggleDrawMode(on) {
+    isDrawModeOn = on !== undefined ? on : !isDrawModeOn;
+    const btn = document.getElementById('toggle-draw');
+    if (btn) {
+        btn.innerHTML = isDrawModeOn ? 'Draw<br>ON' : 'Draw<br>OFF';
+        btn.classList.toggle('draw-active', isDrawModeOn);
+    }
+    if (isDrawModeOn) {
+        document.body.classList.add('draw-mode-on');
+        updateDrawToolCursor();
+    } else {
+        document.body.classList.remove('draw-mode-on');
+        // commit any in-progress text
+        if (textComposingEl) commitTextInput(false);
+    }
+}
+
+function updateDrawToolCursor() {
+    document.body.classList.remove('draw-tool-eraser', 'draw-tool-text');
+    if (drawCurrentTool === 'eraser') document.body.classList.add('draw-tool-eraser');
+    if (drawCurrentTool === 'text')   document.body.classList.add('draw-tool-text');
+}
+
+// ---- Setup drawing system ----
+function setupDrawing() {
+    drawingCanvasEl = document.getElementById('drawing-canvas');
+    if (!drawingCanvasEl) return;
+
+    syncDrawingCanvasSize();
+    drawingCanvasCtx = drawingCanvasEl.getContext('2d');
+
+    // Pointer events on the drawing canvas
+    drawingCanvasEl.addEventListener('pointerdown', onDrawPointerDown);
+    drawingCanvasEl.addEventListener('pointermove', onDrawPointerMove);
+    drawingCanvasEl.addEventListener('pointerup',   onDrawPointerUp);
+    drawingCanvasEl.addEventListener('pointerleave', onDrawPointerUp);
+    drawingCanvasEl.addEventListener('pointercancel', onDrawPointerUp);
+
+    // Resize
+    const ro = new ResizeObserver(() => syncDrawingCanvasSize());
+    const container = document.getElementById('preview-container');
+    if (container) ro.observe(container);
+
+    // Start RAF loop
+    drawingRenderLoop();
+
+    // Toggle draw button
+    const toggleDrawBtn = document.getElementById('toggle-draw');
+    if (toggleDrawBtn) {
+        toggleDrawBtn.addEventListener('click', () => toggleDrawMode());
+    }
+
+    // Tool buttons
+    document.querySelectorAll('.draw-tool-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            drawCurrentTool = btn.dataset.tool;
+            document.querySelectorAll('.draw-tool-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            updateDrawToolCursor();
+        });
+    });
+
+    // Color buttons
+    document.querySelectorAll('.draw-color-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            drawCurrentColor = btn.dataset.color;
+            document.querySelectorAll('.draw-color-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            // update composing textarea color if open
+            if (textComposingEl) textComposingEl.style.color = drawCurrentColor;
+        });
+    });
+
+    // Size buttons
+    document.querySelectorAll('.draw-size-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            drawCurrentSize = btn.dataset.size;
+            document.querySelectorAll('.draw-size-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            // Update text size to preset if size changes
+            if (drawCurrentTool === 'text') {
+                drawCurrentFontSize = DRAW_TEXT_SIZES[drawCurrentSize];
+                updateFontSizeLabel();
+                if (textComposingEl) textComposingEl.style.fontSize = drawCurrentFontSize + 'px';
+            }
+        });
+    });
+
+    // Fade toggle
+    const fadeBtn = document.getElementById('draw-fade-btn');
+    if (fadeBtn) {
+        fadeBtn.addEventListener('click', () => {
+            isFadeEnabled = !isFadeEnabled;
+            fadeBtn.classList.toggle('active', isFadeEnabled);
+            // Apply/remove createdAt for existing strokes
+            const now = performance.now();
+            if (isFadeEnabled) {
+                drawStrokes.forEach(s => { if (s.createdAt === null) s.createdAt = now; });
+            } else {
+                drawStrokes.forEach(s => { s.opacity = 1; });
+            }
+        });
+    }
+
+    // Blackout toggle
+    const blackoutBtn = document.getElementById('draw-blackout-btn');
+    if (blackoutBtn) {
+        blackoutBtn.addEventListener('click', () => toggleBlackout());
+    }
+
+    // Undo
+    const undoBtn = document.getElementById('draw-undo-btn');
+    if (undoBtn) {
+        undoBtn.addEventListener('click', drawUndo);
+    }
+
+    // Clear
+    const clearBtn = document.getElementById('draw-clear-btn');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', drawClear);
+    }
+
+    // Text style buttons
+    document.querySelectorAll('.draw-textstyle-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const style = btn.dataset.textstyle;
+            if (drawCurrentTextStyle === style) {
+                drawCurrentTextStyle = null;
+                btn.classList.remove('active');
+            } else {
+                drawCurrentTextStyle = style;
+                document.querySelectorAll('.draw-textstyle-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            }
+        });
+    });
+
+    // Font size controls
+    const fontDecBtn = document.getElementById('draw-font-decrease');
+    const fontIncBtn = document.getElementById('draw-font-increase');
+    if (fontDecBtn) {
+        fontDecBtn.addEventListener('click', () => {
+            drawCurrentFontSize = Math.max(12, drawCurrentFontSize - 5);
+            updateFontSizeLabel();
+            if (textComposingEl) textComposingEl.style.fontSize = drawCurrentFontSize + 'px';
+        });
+    }
+    if (fontIncBtn) {
+        fontIncBtn.addEventListener('click', () => {
+            drawCurrentFontSize = Math.min(72, drawCurrentFontSize + 5);
+            updateFontSizeLabel();
+            if (textComposingEl) textComposingEl.style.fontSize = drawCurrentFontSize + 'px';
+        });
+    }
+}
+
+function updateFontSizeLabel() {
+    const lbl = document.getElementById('draw-font-size-label');
+    if (lbl) lbl.textContent = drawCurrentFontSize + 'px';
+}
+
+function setDrawTool(tool) {
+    drawCurrentTool = tool;
+    document.querySelectorAll('.draw-tool-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tool === tool);
+    });
+    updateDrawToolCursor();
+}
+
+function toggleBlackout(force) {
+    isBlackout = force !== undefined ? force : !isBlackout;
+    document.body.classList.toggle('blackout-on', isBlackout);
+    const btn = document.getElementById('draw-blackout-btn');
+    if (btn) btn.classList.toggle('active', isBlackout);
+}
+
+function drawUndo() {
+    if (drawUndoStack.length === 0) return;
+    const entry = drawUndoStack.pop();
+    if (entry.action === 'add') {
+        const idx = drawStrokes.indexOf(entry.stroke);
+        if (idx !== -1) drawStrokes.splice(idx, 1);
+    } else if (entry.action === 'remove') {
+        drawStrokes.push(entry.stroke);
+    }
+}
+
+function drawClear() {
+    drawStrokes = [];
+    drawUndoStack = [];
+    activeStroke = null;
+    if (textComposingEl) commitTextInput(true);
+}
+
+// ============================================================
+// End Drawing Annotation System
+// ============================================================
+
 async function init() {
     initIntegrationMode();
 
@@ -1064,10 +1838,76 @@ async function init() {
     // Unified dialogue system
     setupDialogue();
 
-    // 키보드 단축키: Escape로 녹화 중지
+    // Drawing annotation system
+    setupDrawing();
+
+    // 키보드 단축키: Escape로 녹화 중지 + 드로잉 단축키
     document.addEventListener('keydown', (e) => {
+        // Escape: stop recording
         if (e.key === 'Escape' && mediaRecorder && mediaRecorder.state === 'recording') {
             stopRecording();
+        }
+
+        // Skip drawing shortcuts if any input/textarea is focused (except drawing-text-input)
+        const activeEl = document.activeElement;
+        const isInputFocused = activeEl && (
+            (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT') &&
+            activeEl.id !== 'drawing-text-input'
+        );
+        if (isInputFocused) return;
+
+        // Drawing tool shortcuts (only when screen capturing)
+        if (!screenStream) return;
+
+        // B: blackout toggle
+        if (e.key === 'b' || e.key === 'B') {
+            toggleBlackout();
+            return;
+        }
+
+        // Drawing mode must be on for these
+        if (!isDrawModeOn) return;
+
+        // C: clear
+        if (e.key === 'c' || e.key === 'C') {
+            drawClear();
+            return;
+        }
+
+        // Undo: Cmd/Ctrl+Z
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+            e.preventDefault();
+            drawUndo();
+            return;
+        }
+
+        // Tool shortcuts (not when text composing)
+        if (textComposingEl) {
+            // Font size with [ ] when text tool active and not composing...
+            // Actually [ ] are only active when textarea is NOT focused
+            return;
+        }
+
+        if (e.key === 'p' || e.key === 'P') {
+            setDrawTool('pen');
+        } else if (e.key === 'h' || e.key === 'H') {
+            setDrawTool('highlighter');
+        } else if (e.key === 'a' || e.key === 'A') {
+            setDrawTool('arrow');
+        } else if (e.key === 't' || e.key === 'T') {
+            setDrawTool('text');
+        } else if (e.key === 'e' || e.key === 'E') {
+            setDrawTool('eraser');
+        } else if (e.key === '[') {
+            if (drawCurrentTool === 'text') {
+                drawCurrentFontSize = Math.max(12, drawCurrentFontSize - 5);
+                updateFontSizeLabel();
+            }
+        } else if (e.key === ']') {
+            if (drawCurrentTool === 'text') {
+                drawCurrentFontSize = Math.min(72, drawCurrentFontSize + 5);
+                updateFontSizeLabel();
+            }
         }
     });
 
@@ -1956,10 +2796,10 @@ function startRecording() {
 
     // 합성 루프 시작
     function compositeFrame() {
-        // 1. 배경 그리기 (화면 공유가 있으면)
+        // 1. 배경 그리기 (블랙아웃이면 검정, 아니면 화면 공유)
         compositeCtx.fillStyle = '#000';
         compositeCtx.fillRect(0, 0, compositeCanvas.width, compositeCanvas.height);
-        if (screenBg && screenBg.srcObject && screenBg.videoWidth) {
+        if (!isBlackout && screenBg && screenBg.srcObject && screenBg.videoWidth) {
             if (screenZoom > 1) {
                 // 줌 상태: 현재 보이는 영역만 크롭해서 캔버스 전체에 그리기
                 const renderRect = getScreenVideoRenderRect(screenBg);
@@ -2094,6 +2934,9 @@ function startRecording() {
 
         // 3. 대화 메시지 그리기
         drawDialogueToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
+
+        // 4. 드로잉 레이어 합성
+        renderDrawingLayer(compositeCtx, compositeCanvas.width, compositeCanvas.height, performance.now());
 
         compositeAnimationId = requestAnimationFrame(compositeFrame);
     }
@@ -2261,7 +3104,7 @@ function downloadRecording() {
 
 function updateScreenCaptureButtons(isCapturing) {
     const toggleScreenBtn = document.getElementById('toggle-screen');
-    const toggleRecordBtn = document.getElementById('toggle-record');
+    const toggleDrawBtn = document.getElementById('toggle-draw');
 
     if (toggleScreenBtn) {
         toggleScreenBtn.innerHTML = isCapturing ? 'Stop<br>Capture' : 'Screen<br>Capture';
@@ -2270,6 +3113,18 @@ function updateScreenCaptureButtons(isCapturing) {
         } else {
             toggleScreenBtn.classList.remove('mic-active');
         }
+    }
+
+    // Enable/disable Draw button with screen capture state
+    if (toggleDrawBtn) {
+        toggleDrawBtn.disabled = !isCapturing;
+    }
+
+    // When screen capture stops, turn off draw mode and blackout
+    if (!isCapturing) {
+        if (isDrawModeOn) toggleDrawMode(false);
+        if (isBlackout) toggleBlackout(false);
+        drawClear();
     }
 }
 

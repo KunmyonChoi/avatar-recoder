@@ -840,6 +840,305 @@ body.mobile-mode #clear-dialogue {
   }
 }
 
+/* ============================================================
+   Drawing Annotation System
+   ============================================================ */
+
+/* Blackout overlay (behind drawing canvas, above screen bg) */
+#blackout-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: #000;
+  z-index: 6;
+  pointer-events: none;
+}
+
+body.blackout-on #blackout-overlay {
+  display: block;
+}
+
+/* Drawing canvas - topmost, full preview area */
+#drawing-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 19;
+  pointer-events: none;
+  touch-action: none;
+}
+
+body.draw-mode-on #drawing-canvas {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+body.draw-mode-on.draw-tool-eraser #drawing-canvas {
+  cursor: cell;
+}
+
+body.draw-mode-on.draw-tool-text #drawing-canvas {
+  cursor: text;
+}
+
+/* Drawing toolbar */
+#drawing-toolbar {
+  display: none;
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 22;
+  background: rgba(30, 30, 30, 0.88);
+  border-radius: 14px;
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  user-select: none;
+  flex-direction: column;
+  gap: 6px;
+}
+
+body.screen-sharing #drawing-toolbar {
+  display: flex;
+}
+
+#drawing-toolbar-row1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+#drawing-toolbar-row2 {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+body.draw-tool-text #drawing-toolbar-row2 {
+  display: flex;
+}
+
+.draw-divider {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 16px;
+  padding: 0 2px;
+}
+
+/* Tool buttons */
+.draw-tool-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  font-size: 15px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.draw-tool-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.draw-tool-btn.active {
+  background: #007aff;
+  border-color: #007aff;
+}
+
+/* Color buttons */
+.draw-color-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.draw-color-btn:hover {
+  transform: scale(1.2);
+}
+
+.draw-color-btn.active {
+  border-color: white;
+  border-width: 2.5px;
+  transform: scale(1.15);
+}
+
+/* Size buttons */
+.draw-size-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.draw-size-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.draw-size-btn.active {
+  background: #007aff;
+  border-color: #007aff;
+}
+
+/* Fade / Blackout / Undo / Clear buttons */
+#draw-fade-btn,
+#draw-blackout-btn,
+#draw-undo-btn,
+#draw-clear-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  border-radius: 8px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+#draw-fade-btn:hover,
+#draw-blackout-btn:hover,
+#draw-undo-btn:hover,
+#draw-clear-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+#draw-fade-btn.active {
+  background: #ff9500;
+  border-color: #ff9500;
+}
+
+#draw-blackout-btn.active {
+  background: #5856d6;
+  border-color: #5856d6;
+}
+
+/* Text style buttons (row 2) */
+.draw-textstyle-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  border-radius: 8px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.draw-textstyle-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.draw-textstyle-btn.active {
+  background: #34c759;
+  border-color: #34c759;
+}
+
+/* Font size controls (row 2) */
+#draw-font-decrease,
+#draw-font-increase {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+#draw-font-decrease:hover,
+#draw-font-increase:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+#draw-font-size-label {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  min-width: 34px;
+  text-align: center;
+}
+
+/* toggle-draw button in controls bar */
+#toggle-draw {
+  min-width: 58px;
+  line-height: 1.3;
+  padding: 8px 12px;
+  font-size: 14px;
+  text-align: center;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+#toggle-draw.draw-active {
+  background: #ff9500;
+  color: white;
+}
+
+/* Drawing text input (composing state) */
+#drawing-text-input {
+  position: fixed;
+  z-index: 30;
+  background: transparent;
+  border: 1.5px dashed rgba(255, 255, 255, 0.7);
+  border-radius: 4px;
+  color: white;
+  font-family: sans-serif;
+  padding: 4px 6px;
+  resize: none;
+  outline: none;
+  min-width: 60px;
+  min-height: 28px;
+  overflow: hidden;
+}
+
+#drawing-text-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
 /* --- Cross-Origin Integration Badge --- */
 #integration-badge {
   position: fixed;
