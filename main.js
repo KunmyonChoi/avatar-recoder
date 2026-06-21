@@ -936,7 +936,14 @@ let isBlackout = false;
 let isFadeEnabled = false;
 
 let drawCurrentTool = 'pen';   // 'pen' | 'highlighter' | 'arrow' | 'text' | 'eraser'
-let drawCurrentColor = '#ff3b30';
+let drawCurrentColor = '#007aff';
+const toolLastColor = {        // per-tool color memory
+    pen:         '#007aff',
+    highlighter: '#ffcc00',
+    arrow:       '#ff3b30',
+    text:        '#ffffff',
+    eraser:      null,
+};
 let drawCurrentSize = 'M';
 let drawCurrentTextStyle = null; // null | 'shadow' | 'background'
 let drawCurrentFontSize = 24;
@@ -958,6 +965,8 @@ let textLastTapStroke = null;
 let drawingCanvasEl = null;
 let drawingCanvasCtx = null;
 let drawRAFId = null;
+let isDrawPanMode = false;        // Space held → temporary pan mode in draw mode
+let isToolbarHorizontal = false;  // toolbar layout: false=vertical, true=horizontal
 
 const DRAW_LINE_WIDTHS = {
     pen:         { S: 2,  M: 4,  L: 8  },
@@ -967,7 +976,7 @@ const DRAW_LINE_WIDTHS = {
 };
 const DRAW_TEXT_SIZES = { S: 16, M: 24, L: 36 };
 
-const STROKE_FADE_DELAY = 3000;    // ms before pen/arrow fade starts
+const STROKE_FADE_DELAY = 2000;    // ms before pen/arrow fade starts
 const STROKE_FADE_DUR   = 600;     // ms fade duration
 const TEXT_FADE_DELAY   = 10000;
 let drawNextId = 1;
@@ -1358,8 +1367,8 @@ function mountTextInput(clientX, clientY, existingStroke) {
 
 // ---- Main drawing canvas pointer handlers ----
 function onDrawPointerDown(e) {
-    // Allow mini avatar drag if pointer is inside sceneWrapper
-    if (isMiniAvatar) {
+    // Allow mini avatar drag only when NOT in draw mode
+    if (isMiniAvatar && !isDrawModeOn) {
         const sceneWrapper = document.getElementById('scene-wrapper');
         if (sceneWrapper) {
             const r = sceneWrapper.getBoundingClientRect();
@@ -1372,6 +1381,31 @@ function onDrawPointerDown(e) {
     }
 
     if (!isDrawModeOn) return;
+
+    // Right mouse button → temporary eraser (no tool change)
+    if (e.button === 2) {
+        e.preventDefault();
+        const rect = drawingCanvasEl.getBoundingClientRect();
+        const nx = (e.clientX - rect.left) / rect.width;
+        const ny = (e.clientY - rect.top)  / rect.height;
+        eraseAt(nx, ny, drawCurrentSize);
+        activeStroke = { type: 'eraser', x: nx, y: ny };
+        try { drawingCanvasEl.setPointerCapture(e.pointerId); } catch(_) {}
+        document.addEventListener('pointermove', onDrawPointerMove, { passive: false });
+        document.addEventListener('pointerup', onDrawPointerUpGlobal);
+        return;
+    }
+
+    // Space held → pan the zoomed screen instead of drawing
+    if (isDrawPanMode && screenStream && screenZoom > 1) {
+        isScreenPanning = true;
+        screenPanStartX = e.clientX;
+        screenPanStartY = e.clientY;
+        screenZoomTxStart = screenZoomTx;
+        screenZoomTyStart = screenZoomTy;
+        document.body.classList.add('screen-panning');
+        return;
+    }
 
     e.preventDefault();
 
@@ -1434,6 +1468,19 @@ function onDrawPointerDown(e) {
             createdAt: null,
         };
     }
+
+    // Capture pointer so move/up fire even outside the canvas
+    if (activeStroke) {
+        try { drawingCanvasEl.setPointerCapture(e.pointerId); } catch(_) {}
+        document.addEventListener('pointermove', onDrawPointerMove, { passive: false });
+        document.addEventListener('pointerup', onDrawPointerUpGlobal);
+    }
+}
+
+function onDrawPointerUpGlobal(e) {
+    document.removeEventListener('pointermove', onDrawPointerMove);
+    document.removeEventListener('pointerup', onDrawPointerUpGlobal);
+    onDrawPointerUp(e);
 }
 
 function onDrawPointerMove(e) {
@@ -1539,6 +1586,7 @@ function setupDrawing() {
     drawingCanvasEl.addEventListener('pointerup',   onDrawPointerUp);
     drawingCanvasEl.addEventListener('pointerleave', onDrawPointerUp);
     drawingCanvasEl.addEventListener('pointercancel', onDrawPointerUp);
+    drawingCanvasEl.addEventListener('contextmenu', e => { if (isDrawModeOn) e.preventDefault(); });
 
     // Resize
     const ro = new ResizeObserver(() => syncDrawingCanvasSize());
@@ -1556,12 +1604,7 @@ function setupDrawing() {
 
     // Tool buttons
     document.querySelectorAll('.draw-tool-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            drawCurrentTool = btn.dataset.tool;
-            document.querySelectorAll('.draw-tool-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            updateDrawToolCursor();
-        });
+        btn.addEventListener('click', () => setDrawTool(btn.dataset.tool));
     });
 
     // Color buttons
@@ -1570,7 +1613,10 @@ function setupDrawing() {
             drawCurrentColor = btn.dataset.color;
             document.querySelectorAll('.draw-color-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            // update composing textarea color if open
+            // Save to per-tool color memory
+            if (Object.prototype.hasOwnProperty.call(toolLastColor, drawCurrentTool)) {
+                toolLastColor[drawCurrentTool] = drawCurrentColor;
+            }
             if (textComposingEl) textComposingEl.style.color = drawCurrentColor;
         });
     });
@@ -1581,12 +1627,6 @@ function setupDrawing() {
             drawCurrentSize = btn.dataset.size;
             document.querySelectorAll('.draw-size-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            // Update text size to preset if size changes
-            if (drawCurrentTool === 'text') {
-                drawCurrentFontSize = DRAW_TEXT_SIZES[drawCurrentSize];
-                updateFontSizeLabel();
-                if (textComposingEl) textComposingEl.style.fontSize = drawCurrentFontSize + 'px';
-            }
         });
     });
 
@@ -1639,28 +1679,68 @@ function setupDrawing() {
         });
     });
 
-    // Font size controls
-    const fontDecBtn = document.getElementById('draw-font-decrease');
-    const fontIncBtn = document.getElementById('draw-font-increase');
-    if (fontDecBtn) {
-        fontDecBtn.addEventListener('click', () => {
-            drawCurrentFontSize = Math.max(12, drawCurrentFontSize - 5);
-            updateFontSizeLabel();
+    // Font size presets
+    document.querySelectorAll('.draw-fontsize-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            drawCurrentFontSize = parseInt(btn.dataset.fontsize);
+            document.querySelectorAll('.draw-fontsize-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
             if (textComposingEl) textComposingEl.style.fontSize = drawCurrentFontSize + 'px';
         });
-    }
-    if (fontIncBtn) {
-        fontIncBtn.addEventListener('click', () => {
-            drawCurrentFontSize = Math.min(72, drawCurrentFontSize + 5);
-            updateFontSizeLabel();
-            if (textComposingEl) textComposingEl.style.fontSize = drawCurrentFontSize + 'px';
-        });
-    }
-}
+    });
 
-function updateFontSizeLabel() {
-    const lbl = document.getElementById('draw-font-size-label');
-    if (lbl) lbl.textContent = drawCurrentFontSize + 'px';
+    setupToolbarDrag();
+
+    // Migrate title → data-tooltip for custom styled tooltips (removes native browser tooltip)
+    document.querySelectorAll('#drawing-toolbar [title]').forEach(el => {
+        el.dataset.tooltip = el.getAttribute('title');
+        el.removeAttribute('title');
+    });
+
+    // Fixed-position tooltip (bypasses toolbar overflow clipping)
+    const tooltipEl = document.createElement('div');
+    tooltipEl.id = 'draw-tooltip';
+    document.body.appendChild(tooltipEl);
+
+    let tooltipTimer = null;
+    document.getElementById('drawing-toolbar').addEventListener('mouseover', e => {
+        const target = e.target.closest('[data-tooltip]');
+        if (!target) return;
+        clearTimeout(tooltipTimer);
+        tooltipTimer = setTimeout(() => {
+            const rect = target.getBoundingClientRect();
+            tooltipEl.textContent = target.dataset.tooltip;
+            tooltipEl.className = isToolbarHorizontal ? 'tip-below' : 'tip-right';
+            tooltipEl.style.visibility = 'hidden';
+            const tw = tooltipEl.offsetWidth;
+            const th = tooltipEl.offsetHeight;
+            let top, left;
+            if (isToolbarHorizontal) {
+                left = rect.left + rect.width / 2 - tw / 2;
+                top  = rect.bottom + 10;
+            } else {
+                left = rect.right + 10;
+                top  = rect.top + rect.height / 2 - th / 2;
+            }
+            tooltipEl.style.left = `${Math.max(4, left)}px`;
+            tooltipEl.style.top  = `${Math.max(4, top)}px`;
+            tooltipEl.style.visibility = '';
+            tooltipEl.classList.add('visible');
+        }, 300);
+    });
+
+    document.getElementById('drawing-toolbar').addEventListener('mouseleave', () => {
+        clearTimeout(tooltipTimer);
+        tooltipEl.classList.remove('visible');
+    });
+
+    document.getElementById('drawing-toolbar').addEventListener('mouseout', e => {
+        const target = e.target.closest('[data-tooltip]');
+        if (target && !target.contains(e.relatedTarget)) {
+            clearTimeout(tooltipTimer);
+            tooltipEl.classList.remove('visible');
+        }
+    });
 }
 
 function setDrawTool(tool) {
@@ -1668,7 +1748,72 @@ function setDrawTool(tool) {
     document.querySelectorAll('.draw-tool-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tool === tool);
     });
+    // Restore this tool's last color
+    if (toolLastColor[tool]) {
+        drawCurrentColor = toolLastColor[tool];
+        document.querySelectorAll('.draw-color-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.color === drawCurrentColor);
+        });
+    }
     updateDrawToolCursor();
+}
+
+function setupToolbarDrag() {
+    const toolbar = document.getElementById('drawing-toolbar');
+    const handle = document.getElementById('drawing-toolbar-handle');
+    if (!toolbar || !handle) return;
+
+    // Orientation toggle
+    const orientBtn = document.getElementById('draw-orient-btn');
+    const orientPath = document.getElementById('draw-orient-path');
+    if (orientBtn) {
+        orientBtn.addEventListener('mousedown', e => e.stopPropagation());
+        orientBtn.addEventListener('click', () => {
+            isToolbarHorizontal = !isToolbarHorizontal;
+            document.body.classList.toggle('toolbar-horizontal', isToolbarHorizontal);
+            if (orientPath) {
+                orientPath.setAttribute('d', isToolbarHorizontal ? 'M3 12h18' : 'M12 3v18');
+            }
+            // Reset position so toolbar reflows from default placement
+            toolbar.style.left = '';
+            toolbar.style.top = '';
+            toolbar.style.transform = '';
+        });
+    }
+
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+
+    handle.addEventListener('mousedown', (e) => {
+        if (e.target.closest('#draw-orient-btn')) return;
+        e.preventDefault();
+        const rect = toolbar.getBoundingClientRect();
+        toolbar.style.transform = 'none';
+        toolbar.style.left = rect.left + 'px';
+        toolbar.style.top = rect.top + 'px';
+        dragOffsetX = e.clientX - rect.left;
+        dragOffsetY = e.clientY - rect.top;
+        isDragging = true;
+        document.body.classList.add('toolbar-dragging');
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const tw = toolbar.offsetWidth;
+        const th = toolbar.offsetHeight;
+        const newLeft = Math.max(0, Math.min(window.innerWidth - tw, e.clientX - dragOffsetX));
+        const newTop = Math.max(0, Math.min(window.innerHeight - th, e.clientY - dragOffsetY));
+        toolbar.style.left = newLeft + 'px';
+        toolbar.style.top = newTop + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isDragging) {
+            isDragging = false;
+            document.body.classList.remove('toolbar-dragging');
+        }
+    });
 }
 
 function toggleBlackout(force) {
@@ -1856,9 +2001,6 @@ async function init() {
         );
         if (isInputFocused) return;
 
-        // Drawing tool shortcuts (only when screen capturing)
-        if (!screenStream) return;
-
         // B: blackout toggle
         if (e.key === 'b' || e.key === 'B') {
             toggleBlackout();
@@ -1898,16 +2040,17 @@ async function init() {
             setDrawTool('text');
         } else if (e.key === 'e' || e.key === 'E') {
             setDrawTool('eraser');
-        } else if (e.key === '[') {
-            if (drawCurrentTool === 'text') {
-                drawCurrentFontSize = Math.max(12, drawCurrentFontSize - 5);
-                updateFontSizeLabel();
-            }
-        } else if (e.key === ']') {
-            if (drawCurrentTool === 'text') {
-                drawCurrentFontSize = Math.min(72, drawCurrentFontSize + 5);
-                updateFontSizeLabel();
-            }
+        } else if (e.code === 'Space') {
+            e.preventDefault();
+            isDrawPanMode = true;
+            document.body.classList.add('draw-pan-mode');
+        }
+    });
+
+    document.addEventListener('keyup', (e) => {
+        if (e.code === 'Space' && isDrawPanMode) {
+            isDrawPanMode = false;
+            document.body.classList.remove('draw-pan-mode');
         }
     });
 
@@ -3115,14 +3258,8 @@ function updateScreenCaptureButtons(isCapturing) {
         }
     }
 
-    // Enable/disable Draw button with screen capture state
-    if (toggleDrawBtn) {
-        toggleDrawBtn.disabled = !isCapturing;
-    }
-
-    // When screen capture stops, turn off draw mode and blackout
+    // When screen capture stops, turn off blackout and clear drawings
     if (!isCapturing) {
-        if (isDrawModeOn) toggleDrawMode(false);
         if (isBlackout) toggleBlackout(false);
         drawClear();
     }

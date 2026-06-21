@@ -26,37 +26,96 @@
       <canvas id="drawing-canvas"></canvas>
       <!-- Drawing Toolbar -->
       <div id="drawing-toolbar">
-        <div id="drawing-toolbar-row1">
-          <button class="draw-tool-btn active" data-tool="pen" title="Pen (P)">✏</button>
-          <button class="draw-tool-btn" data-tool="highlighter" title="Highlighter (H)">══</button>
-          <button class="draw-tool-btn" data-tool="arrow" title="Arrow (A)">→</button>
-          <button class="draw-tool-btn" data-tool="text" title="Text (T)">T</button>
-          <button class="draw-tool-btn" data-tool="eraser" title="Eraser (E)">◌</button>
-          <span class="draw-divider">|</span>
-          <button class="draw-color-btn active" data-color="#ff3b30" style="background:#ff3b30" title="Red"></button>
-          <button class="draw-color-btn" data-color="#ffcc00" style="background:#ffcc00" title="Yellow"></button>
-          <button class="draw-color-btn" data-color="#34c759" style="background:#34c759" title="Green"></button>
-          <button class="draw-color-btn" data-color="#007aff" style="background:#007aff" title="Blue"></button>
-          <button class="draw-color-btn" data-color="#ffffff" style="background:#ffffff" title="White"></button>
-          <button class="draw-color-btn" data-color="#000000" style="background:#000000" title="Black"></button>
-          <span class="draw-divider">|</span>
-          <button class="draw-size-btn" data-size="S" title="Small">S</button>
-          <button class="draw-size-btn active" data-size="M" title="Medium">M</button>
-          <button class="draw-size-btn" data-size="L" title="Large">L</button>
-          <span class="draw-divider">|</span>
-          <button id="draw-fade-btn" title="Fade annotations">FADE</button>
-          <button id="draw-blackout-btn" title="Blackout background (B)">BG</button>
-          <span class="draw-divider">|</span>
-          <button id="draw-undo-btn" title="Undo (Cmd/Ctrl+Z)">↩</button>
-          <button id="draw-clear-btn" title="Clear all (C)">✕</button>
+        <!-- Handle: drag grip + orientation toggle -->
+        <div id="drawing-toolbar-handle">
+          <svg class="draw-grip" viewBox="0 0 12 18" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="3" cy="3" r="1.5"/><circle cx="9" cy="3" r="1.5"/>
+            <circle cx="3" cy="9" r="1.5"/><circle cx="9" cy="9" r="1.5"/>
+            <circle cx="3" cy="15" r="1.5"/><circle cx="9" cy="15" r="1.5"/>
+          </svg>
+          <button id="draw-orient-btn" title="Toggle layout orientation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2.5"/>
+              <path id="draw-orient-path" d="M12 3v18"/>
+            </svg>
+          </button>
         </div>
+        <!-- Row 1: tools · colors · sizes · actions -->
+        <div id="drawing-toolbar-row1">
+          <button class="draw-tool-btn active" data-tool="pen" title="Pen (P)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+          </button>
+          <button class="draw-tool-btn" data-tool="highlighter" title="Highlighter (H)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11-6 6v3h3l6-6"/><path d="m22 2-3.5-3.5-9 9 3.5 3.5 9-9z"/></svg>
+          </button>
+          <button class="draw-tool-btn" data-tool="arrow" title="Arrow (A)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>
+          </button>
+          <button class="draw-tool-btn" data-tool="text" title="Text (T)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+          </button>
+          <button class="draw-tool-btn" data-tool="eraser" title="Eraser (E)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+          </button>
+          <span class="draw-divider"></span>
+          <div class="draw-colors-grid">
+            <button class="draw-color-btn" data-color="#ff3b30" style="background:#ff3b30" title="Red"></button>
+            <button class="draw-color-btn" data-color="#ffcc00" style="background:#ffcc00" title="Yellow"></button>
+            <button class="draw-color-btn" data-color="#34c759" style="background:#34c759" title="Green"></button>
+            <button class="draw-color-btn active" data-color="#007aff" style="background:#007aff" title="Blue"></button>
+            <button class="draw-color-btn" data-color="#ffffff" style="background:#ffffff" title="White"></button>
+            <button class="draw-color-btn" data-color="#000000" style="background:#000000" title="Black"></button>
+          </div>
+          <span class="draw-divider"></span>
+          <div class="draw-sizes-row">
+            <button class="draw-size-btn" data-size="S" title="Small stroke">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
+            </button>
+            <button class="draw-size-btn active" data-size="M" title="Medium stroke">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>
+            </button>
+            <button class="draw-size-btn" data-size="L" title="Large stroke">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" fill="currentColor"/></svg>
+            </button>
+          </div>
+          <div class="draw-fontsize-presets">
+            <button class="draw-fontsize-btn" data-fontsize="16" title="Small (16px)">S</button>
+            <button class="draw-fontsize-btn active" data-fontsize="24" title="Medium (24px)">M</button>
+            <button class="draw-fontsize-btn" data-fontsize="36" title="Large (36px)">L</button>
+          </div>
+          <span class="draw-divider"></span>
+          <button id="draw-fade-btn" title="Fade annotations (auto-disappear)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </button>
+          <button id="draw-blackout-btn" title="Blackout background (B)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9z" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <span class="draw-divider"></span>
+          <button id="draw-undo-btn" title="Undo (Cmd/Ctrl+Z)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+          </button>
+          <button id="draw-clear-btn" title="Clear all (C)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </button>
+        </div>
+        <!-- Row separator: visible in horizontal mode when text tool active -->
+        <span class="draw-row-sep"></span>
+        <!-- Row 2: text-specific controls (shadow/bg · font size) -->
         <div id="drawing-toolbar-row2">
-          <button class="draw-textstyle-btn" data-textstyle="shadow" title="Shadow">Shadow</button>
-          <button class="draw-textstyle-btn" data-textstyle="background" title="Background">BG</button>
-          <span class="draw-divider">|</span>
-          <button id="draw-font-decrease" title="Decrease font size">−</button>
-          <span id="draw-font-size-label">24px</span>
-          <button id="draw-font-increase" title="Increase font size">+</button>
+          <div class="draw-textstyle-row">
+            <button class="draw-textstyle-btn active" data-textstyle="shadow" title="Text shadow">
+              <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                <text x="11.5" y="15.5" text-anchor="middle" font-size="12" font-weight="800" fill="rgba(0,0,0,0.45)" font-family="system-ui,sans-serif">T</text>
+                <text x="9.5" y="13.5" text-anchor="middle" font-size="12" font-weight="800" fill="currentColor" font-family="system-ui,sans-serif">T</text>
+              </svg>
+            </button>
+            <button class="draw-textstyle-btn" data-textstyle="background" title="Text background">
+              <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1.5" y="5" width="17" height="11" rx="2.5" fill="currentColor" fill-opacity="0.25" stroke="currentColor" stroke-width="1.2"/>
+                <text x="10" y="14.5" text-anchor="middle" font-size="10.5" font-weight="800" fill="currentColor" font-family="system-ui,sans-serif">T</text>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
       <!-- Screen Zoom Indicator -->
@@ -74,7 +133,7 @@
       <!-- Screen/Recording 제어 -->
       <button id="toggle-record">Start<br>Record</button>
       <button id="toggle-screen">Screen<br>Capture</button>
-      <button id="toggle-draw" disabled>Draw<br>OFF</button>
+      <button id="toggle-draw">Draw<br>OFF</button>
       <span class="divider">|</span>
       <!-- 장치 제어 (Camera, Mic) -->
       <button id="toggle-camera">Cam<br>ON</button>
