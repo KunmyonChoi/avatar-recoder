@@ -48,20 +48,50 @@
             <div class="audio-meter-bar"></div>
           </div>
         </div>
-        <input type="range" id="audio-mix-slider" min="0" max="100" value="50" title="Mic ← → Tab">
+        <div class="audio-mix-row">
+          <!-- 마이크 아이콘 (왼쪽 = Mic 비중 높음) -->
+          <svg class="mix-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" title="Microphone">
+            <rect x="9" y="2" width="6" height="12" rx="3"/>
+            <path d="M5 10a7 7 0 0 0 14 0"/>
+            <line x1="12" y1="17" x2="12" y2="22"/>
+            <line x1="9" y1="22" x2="15" y2="22"/>
+          </svg>
+          <input type="range" id="audio-mix-slider" min="0" max="100" value="50" title="Mic ← → Tab">
+          <!-- 모니터 아이콘 (오른쪽 = Tab 오디오 비중 높음) -->
+          <svg class="mix-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" title="Tab Audio">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+        </div>
       </div>
       <span class="divider">|</span>
       <!-- 아바타 제어 -->
-      <button id="toggle-avatar-size">Avatar<br>Full</button>
-      <div class="avatar-select">
-        <select id="avatar-select-dropdown" title="아바타 선택">
-          <option value="./avatar.vrm">♀ Female</option>
-          <option value="./avatar-male.glb">♂ Male</option>
-        </select>
-        <button id="load-custom-avatar" title="로컬 VRM 파일 불러오기">Load<br>VRM</button>
-        <input type="file" id="avatar-file-input" accept=".vrm,.glb" style="display:none">
+      <div class="avatar-controls">
+        <button id="toggle-avatar-visibility">Avatar<br>ON</button>
+        <div class="avatar-options">
+          <div class="option-group">
+            <span class="option-label">Size</span>
+            <button class="option-btn active" data-avatar-size="full">Full</button>
+            <button class="option-btn" data-avatar-size="mini">Mini</button>
+          </div>
+          <div class="option-group">
+            <span class="option-label">Pose</span>
+            <button class="option-btn" data-avatar-pose="on">ON</button>
+            <button class="option-btn active" data-avatar-pose="off">OFF</button>
+          </div>
+          <div class="option-group">
+            <select id="avatar-select-dropdown" title="아바타 선택">
+              <option value="./avatar.vrm">♀ Female</option>
+              <option value="./avatar-male.glb">♂ Male</option>
+            </select>
+          </div>
+          <div class="option-group">
+            <button id="load-custom-avatar" title="로컬 VRM 파일 불러오기">Load VRM</button>
+            <input type="file" id="avatar-file-input" accept=".vrm,.glb" style="display:none">
+          </div>
+        </div>
       </div>
-      <button id="toggle-body">Pose<br>OFF</button>
       <div class="dialogue-controls">
         <button id="toggle-dialogue">Talk<br>OFF</button>
         <div class="dialogue-options">

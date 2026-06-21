@@ -142,6 +142,7 @@ let mediaRecorder = null;            // 녹화기
 let recordedChunks = [];             // 녹화 데이터
 let isMiniAvatar = false;            // 미니 아바타 모드
 let miniAvatarPosition = { x: null, y: null };  // 미니 아바타 위치
+let isAvatarVisible = true;          // 아바타 표시 여부
 
 // --- Screen Zoom ---
 let screenZoom = 1;
@@ -153,6 +154,44 @@ let screenPanStartY = 0;
 let screenZoomTxStart = 0;
 let screenZoomTyStart = 0;
 let zoomIndicatorTimer = null;
+
+// --- Captured Screen Resolution ---
+let capturedScreenWidth = 0;     // 캡쳐된 화면 실제 너비
+let capturedScreenHeight = 0;    // 캡쳐된 화면 실제 높이
+let prevRendererSize = null;     // 세로 모드 적응 전 렌더러 크기 저장
+
+// --- Cross-Origin Integration (postMessage) ---
+const _integrationParams = (() => {
+    const p = new URLSearchParams(window.location.search);
+    const mode = p.get('mode');
+    const rawOrigin = p.get('origin');
+    if (mode !== 'popup' || !rawOrigin) return null;
+    try {
+        const url = new URL(rawOrigin);
+        return {
+            origin: url.origin,
+            sessionId: p.get('session') || null,
+            autoRecord: p.get('autoRecord') === '1',
+        };
+    } catch {
+        return null;
+    }
+})();
+const isIntegrationMode = !!_integrationParams;
+
+// --- Stable Window Dimensions (debounced) ---
+// window.innerWidth/Height를 매 프레임 직접 읽으면 Dock 등 시스템 UI 변화에 즉시 반응해
+// compositeFrame / 대화 렌더링에서 출렁임이 발생한다. 150ms debounce로 안정화.
+let stableWindowWidth = window.innerWidth;
+let stableWindowHeight = window.innerHeight;
+let windowResizeTimer = null;
+window.addEventListener('resize', () => {
+    clearTimeout(windowResizeTimer);
+    windowResizeTimer = setTimeout(() => {
+        stableWindowWidth = window.innerWidth;
+        stableWindowHeight = window.innerHeight;
+    }, 150);
+});
 
 // --- Audio ---
 let micStream = null;                // 마이크 스트림
@@ -244,8 +283,8 @@ function drawChatMessagesToCanvas(ctx, canvasWidth, canvasHeight) {
     let centerX, baseY;
     if (isMiniAvatar && miniAvatarPosition.x !== null) {
         // Mini avatar 모드: 아바타 머리 근처
-        const scaleX = canvasWidth / window.innerWidth;
-        const scaleY = canvasHeight / window.innerHeight;
+        const scaleX = canvasWidth / stableWindowWidth;
+        const scaleY = canvasHeight / stableWindowHeight;
         const avatarWidth = 300 * scaleX;
         centerX = (miniAvatarPosition.x * scaleX) + avatarWidth / 2;
         baseY = (miniAvatarPosition.y * scaleY) + 50; // 아바타 상단 근처
@@ -565,8 +604,8 @@ function drawCaptionToCanvas(ctx, canvasWidth, canvasHeight) {
     let x, y;
     if (isMiniAvatar && miniAvatarPosition.x !== null) {
         // Mini avatar 모드: 아바타 몸통 위치에 표시
-        const scaleX = canvasWidth / window.innerWidth;
-        const scaleY = canvasHeight / window.innerHeight;
+        const scaleX = canvasWidth / stableWindowWidth;
+        const scaleY = canvasHeight / stableWindowHeight;
         const avatarWidth = 300 * scaleX;
         const avatarHeight = 400 * scaleY;
         x = (miniAvatarPosition.x * scaleX) + avatarWidth / 2;
@@ -739,8 +778,8 @@ function drawDialogueToCanvas(ctx, canvasWidth, canvasHeight) {
 
     let centerX, baseY;
     if (isMiniAvatar && miniAvatarPosition.x !== null) {
-        const scaleX = canvasWidth / window.innerWidth;
-        const scaleY = canvasHeight / window.innerHeight;
+        const scaleX = canvasWidth / stableWindowWidth;
+        const scaleY = canvasHeight / stableWindowHeight;
         centerX = (miniAvatarPosition.x * scaleX) + 150 * scaleX;
         baseY = (miniAvatarPosition.y * scaleY) + 250 * scaleY;
     } else {
@@ -835,7 +874,61 @@ function setupDialogue() {
 }
 
 // --- Initialization ---
+function _postToOpener(payload) {
+    if (!isIntegrationMode || !window.opener) return;
+    window.opener.postMessage(payload, _integrationParams.origin);
+}
+
+function initIntegrationMode() {
+    if (!isIntegrationMode) return;
+
+    // 팝업 모드 UI 배지 표시
+    const badge = document.createElement('div');
+    badge.id = 'integration-badge';
+    badge.textContent = `↩ ${_integrationParams.origin}`;
+    document.body.appendChild(badge);
+
+    // opener로부터 명령 수신
+    window.addEventListener('message', (e) => {
+        if (e.origin !== _integrationParams.origin) return;
+        const { type } = e.data || {};
+        if (type === 'avatar-recorder:start') {
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') startRecording();
+        } else if (type === 'avatar-recorder:stop') {
+            if (mediaRecorder && mediaRecorder.state === 'recording') stopRecording();
+        } else if (type === 'avatar-recorder:cancel') {
+            recordedChunks = [];
+            window.close();
+        }
+    });
+
+    // 창 닫힘 시 cancelled 알림
+    window.addEventListener('beforeunload', () => {
+        if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+            _postToOpener({ type: 'avatar-recorder:cancelled', sessionId: _integrationParams.sessionId });
+        }
+    });
+
+    // opener에 준비 완료 신호 전송
+    _postToOpener({ type: 'avatar-recorder:ready', sessionId: _integrationParams.sessionId });
+
+    // autoRecord 옵션 처리
+    if (_integrationParams.autoRecord) {
+        // MediaPipe 초기화 완료를 기다린 뒤 자동 시작
+        const waitAndRecord = () => {
+            if (mediaRecorder === null && document.getElementById('output_canvas')) {
+                startRecording();
+            } else {
+                setTimeout(waitAndRecord, 500);
+            }
+        };
+        setTimeout(waitAndRecord, 2000);
+    }
+}
+
 async function init() {
+    initIntegrationMode();
+
     // 모바일 모드 설정
     if (isMobile) {
         console.log('[Mobile] Mobile device detected:', isIOS ? 'iOS' : isAndroid ? 'Android' : 'Other');
@@ -892,19 +985,6 @@ async function init() {
     // 초기 view 상태 적용
     updateView();
     updateDevOptions();
-
-    const toggleBodyBtn = document.getElementById('toggle-body');
-    if (toggleBodyBtn) {
-        toggleBodyBtn.addEventListener('click', () => {
-            BODY_TRACKING_ENABLED = !BODY_TRACKING_ENABLED;
-            toggleBodyBtn.innerHTML = BODY_TRACKING_ENABLED ? "Pose<br>ON" : "Pose<br>OFF";
-            // Body tracking 비활성화 시 팔 상태 리셋
-            if (!BODY_TRACKING_ENABLED) {
-                leftArmActive = false;
-                rightArmActive = false;
-            }
-        });
-    }
 
     // 아바타 드롭다운
     const avatarDropdown = document.getElementById('avatar-select-dropdown');
@@ -1060,7 +1140,6 @@ async function init() {
 // ============================================================
 function setupScreenCaptureControls() {
     const toggleScreenBtn = document.getElementById('toggle-screen');
-    const toggleAvatarSizeBtn = document.getElementById('toggle-avatar-size');
     const toggleMicBtn = document.getElementById('toggle-mic');
     const toggleRecordBtn = document.getElementById('toggle-record');
     const toggleCameraBtn = document.getElementById('toggle-camera');
@@ -1068,9 +1147,7 @@ function setupScreenCaptureControls() {
     if (toggleScreenBtn) {
         toggleScreenBtn.addEventListener('click', toggleScreenCapture);
     }
-    if (toggleAvatarSizeBtn) {
-        toggleAvatarSizeBtn.addEventListener('click', toggleAvatarSize);
-    }
+    setupAvatarControls();
     if (toggleMicBtn) {
         toggleMicBtn.addEventListener('click', toggleMicrophone);
     }
@@ -1323,12 +1400,7 @@ function getAudioLevel(analyser) {
 function toggleAvatarSize() {
     isMiniAvatar = !isMiniAvatar;
 
-    const btn = document.getElementById('toggle-avatar-size');
     const sceneWrapper = document.getElementById('scene-wrapper');
-
-    if (btn) {
-        btn.innerHTML = isMiniAvatar ? 'Avatar<br>Mini' : 'Avatar<br>Full';
-    }
 
     if (isMiniAvatar) {
         document.body.classList.add('mini-avatar');
@@ -1371,6 +1443,64 @@ function toggleAvatarSize() {
             }
         }
     }, 50);
+    syncAvatarOptionsUI();
+}
+
+function toggleAvatarVisibility() {
+    isAvatarVisible = !isAvatarVisible;
+
+    const sceneWrapper = document.getElementById('scene-wrapper');
+    if (sceneWrapper) {
+        sceneWrapper.style.visibility = isAvatarVisible ? '' : 'hidden';
+    }
+    syncAvatarOptionsUI();
+}
+
+function syncAvatarOptionsUI() {
+    // Size 옵션 버튼 동기화
+    document.querySelectorAll('[data-avatar-size]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.avatarSize === (isMiniAvatar ? 'mini' : 'full'));
+    });
+    // Pose 옵션 버튼 동기화
+    document.querySelectorAll('[data-avatar-pose]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.avatarPose === (BODY_TRACKING_ENABLED ? 'on' : 'off'));
+    });
+    // 메인 가시성 버튼 동기화
+    const visBtn = document.getElementById('toggle-avatar-visibility');
+    if (visBtn) {
+        visBtn.innerHTML = isAvatarVisible ? 'Avatar<br>ON' : 'Avatar<br>OFF';
+        visBtn.classList.toggle('active', !isAvatarVisible);
+    }
+}
+
+function setupAvatarControls() {
+    // 메인 버튼: 가시성 토글
+    const visBtn = document.getElementById('toggle-avatar-visibility');
+    if (visBtn) visBtn.addEventListener('click', toggleAvatarVisibility);
+
+    // Size 옵션 버튼
+    document.querySelectorAll('[data-avatar-size]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const shouldBeMini = btn.dataset.avatarSize === 'mini';
+            if (isMiniAvatar !== shouldBeMini) toggleAvatarSize();
+            else syncAvatarOptionsUI(); // 이미 같은 상태면 UI만 동기화
+        });
+    });
+
+    // Pose 옵션 버튼
+    document.querySelectorAll('[data-avatar-pose]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const enable = btn.dataset.avatarPose === 'on';
+            if (BODY_TRACKING_ENABLED !== enable) {
+                BODY_TRACKING_ENABLED = enable;
+                if (!BODY_TRACKING_ENABLED) {
+                    leftArmActive = false;
+                    rightArmActive = false;
+                }
+            }
+            syncAvatarOptionsUI();
+        });
+    });
 }
 
 // 드래그&드롭 기능
@@ -1500,11 +1630,85 @@ function updateZoomIndicator() {
         indicator.style.opacity = '1';
         clearTimeout(zoomIndicatorTimer);
         zoomIndicatorTimer = setTimeout(() => {
-            indicator.style.opacity = '0';
+            // 줌 해제 후: 해상도 표시 또는 숨김
+            if (capturedScreenWidth > 0) {
+                indicator.textContent = `${capturedScreenWidth}×${capturedScreenHeight}`;
+                indicator.style.opacity = '0.75';
+            } else {
+                indicator.style.opacity = '0';
+            }
         }, 1500);
+    } else if (capturedScreenWidth > 0) {
+        // 스크린 캡쳐 중: 캡쳐 해상도 표시
+        indicator.textContent = `${capturedScreenWidth}×${capturedScreenHeight}`;
+        indicator.style.opacity = '0.75';
     } else {
         indicator.style.opacity = '0';
     }
+}
+
+// 캡쳐 해상도에 맞춰 Three.js 렌더러 크기 적응 (세로 모드 대응)
+function adaptRendererToCapture() {
+    if (!capturedScreenWidth || !capturedScreenHeight) return;
+    if (!renderer || !camera) return;
+
+    const isPortrait = capturedScreenHeight > capturedScreenWidth;
+    if (!isPortrait) return;  // 가로 모드는 변경 없음
+
+    // 미니 아바타 모드는 이미 300×400 (3:4) portrait canvas → 불필요
+    if (isMiniAvatar) return;
+
+    const sceneWrapper = document.getElementById('scene-wrapper');
+    if (!sceneWrapper) return;
+
+    // 현재 크기 저장
+    prevRendererSize = {
+        cssWidth: sceneWrapper.style.width,
+        cssHeight: sceneWrapper.style.height,
+    };
+
+    // 브라우저 창 높이 기준으로 세로 아바타 캔버스 크기 계산
+    const aspect = capturedScreenWidth / capturedScreenHeight;
+    const targetHeight = Math.min(window.innerHeight * 0.85, 720);
+    const targetWidth = Math.round(targetHeight * aspect);
+
+    sceneWrapper.style.width = targetWidth + 'px';
+    sceneWrapper.style.height = targetHeight + 'px';
+
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+    renderer.setSize(targetWidth, targetHeight);
+
+    console.log(`[Screen] Renderer adapted to portrait: ${targetWidth}×${targetHeight} (${capturedScreenWidth}×${capturedScreenHeight})`);
+}
+
+// 스크린 캡쳐 종료 시 렌더러 크기 복원
+function restoreRendererFromCapture() {
+    if (!prevRendererSize || !renderer || !camera) {
+        prevRendererSize = null;
+        return;
+    }
+
+    const sceneWrapper = document.getElementById('scene-wrapper');
+    if (!sceneWrapper) { prevRendererSize = null; return; }
+
+    sceneWrapper.style.width = prevRendererSize.cssWidth || '';
+    sceneWrapper.style.height = prevRendererSize.cssHeight || '';
+
+    // ResizeObserver가 자동 업데이트하지만 즉시 적용도 보장
+    setTimeout(() => {
+        if (!sceneWrapper || !renderer || !camera) return;
+        const w = sceneWrapper.clientWidth;
+        const h = sceneWrapper.clientHeight;
+        if (w > 0 && h > 0) {
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }
+    }, 100);
+
+    prevRendererSize = null;
+    console.log('[Screen] Renderer size restored');
 }
 
 function setupScreenZoomAndPan() {
@@ -1588,6 +1792,19 @@ async function startScreenCapture() {
         screenVideo = document.getElementById('screen-background');
         screenVideo.srcObject = screenStream;
         screenVideo.play();
+
+        // 캡쳐된 화면 해상도 감지 (loadedmetadata 또는 이미 준비된 경우 즉시)
+        const detectCapturedResolution = () => {
+            if (screenVideo.videoWidth > 0) {
+                capturedScreenWidth = screenVideo.videoWidth;
+                capturedScreenHeight = screenVideo.videoHeight;
+                console.log(`[Screen] Captured resolution: ${capturedScreenWidth}×${capturedScreenHeight}`);
+                adaptRendererToCapture();
+                updateZoomIndicator();
+            }
+        };
+        screenVideo.addEventListener('loadedmetadata', detectCapturedResolution, { once: true });
+        if (screenVideo.videoWidth > 0) detectCapturedResolution();
 
         // 탭 오디오 여부 확인 및 레벨 미터 설정
         const hasTabAudio = screenStream.getAudioTracks().length > 0;
@@ -1675,6 +1892,12 @@ function stopScreenCapture() {
     // 줌 상태 리셋
     resetScreenZoom();
 
+    // 캡쳐 해상도 리셋 및 렌더러 복원
+    capturedScreenWidth = 0;
+    capturedScreenHeight = 0;
+    restoreRendererFromCapture();
+    updateZoomIndicator();
+
     // 카메라 프리뷰 다시 보이기
     document.body.classList.remove('screen-sharing');
 
@@ -1682,8 +1905,7 @@ function stopScreenCapture() {
     if (isMiniAvatar) {
         isMiniAvatar = false;
         document.body.classList.remove('mini-avatar');
-        const btn = document.getElementById('toggle-avatar-size');
-        if (btn) btn.innerHTML = 'Avatar<br>Full';
+        syncAvatarOptionsUI();
 
         const sceneWrapper = document.getElementById('scene-wrapper');
         if (sceneWrapper) {
@@ -1724,9 +1946,10 @@ function startRecording() {
     recordedChunks = [];
 
     // 합성 캔버스 생성 (DOM에 추가하여 captureStream 호환성 확보)
+    // 스크린 캡쳐 중이면 실제 캡쳐 해상도 사용, 아니면 기본 1920×1080
     compositeCanvas = document.createElement('canvas');
-    compositeCanvas.width = 1920;
-    compositeCanvas.height = 1080;
+    compositeCanvas.width = capturedScreenWidth > 0 ? capturedScreenWidth : 1920;
+    compositeCanvas.height = capturedScreenHeight > 0 ? capturedScreenHeight : 1080;
     compositeCanvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;';
     document.body.appendChild(compositeCanvas);
     compositeCtx = compositeCanvas.getContext('2d');
@@ -1742,8 +1965,8 @@ function startRecording() {
                 const renderRect = getScreenVideoRenderRect(screenBg);
                 if (renderRect) {
                     const { rx, ry, rw, rh } = renderRect;
-                    const W = window.innerWidth;
-                    const H = window.innerHeight;
+                    const W = stableWindowWidth;
+                    const H = stableWindowHeight;
                     const vw = screenBg.videoWidth;
                     const vh = screenBg.videoHeight;
 
@@ -1761,8 +1984,18 @@ function startRecording() {
                         compositeCtx.drawImage(screenBg, sx, sy, sw, sh, 0, 0, compositeCanvas.width, compositeCanvas.height);
                     }
                 }
+            } else if (capturedScreenWidth > 0) {
+                // 캡쳐 해상도가 확정된 경우: canvas = capturedScreenWidth×capturedScreenHeight
+                // 5인수 drawImage는 object-fit:contain 레터박스를 포함할 수 있어
+                // 뷰포트 변화 시 왼쪽 빈공간 + 내용 압축 현상 발생.
+                // 9인수 형식으로 소스 영역을 명시해 CSS 표현을 완전히 우회.
+                compositeCtx.drawImage(
+                    screenBg,
+                    0, 0, capturedScreenWidth, capturedScreenHeight,
+                    0, 0, compositeCanvas.width, compositeCanvas.height
+                );
             } else {
-                // 줌 없음: 기존 aspect-ratio 유지 그리기
+                // 스크린 캡쳐 없이 녹화 (아바타만): aspect-ratio 유지해서 중앙 정렬
                 const videoAspect = screenBg.videoWidth / screenBg.videoHeight;
                 const canvasAspect = compositeCanvas.width / compositeCanvas.height;
                 let drawWidth, drawHeight, drawX, drawY;
@@ -1781,39 +2014,62 @@ function startRecording() {
             }
         }
 
-        // 2. 아바타 캔버스 그리기
-        if (isMiniAvatar) {
+        // 2. 아바타 캔버스 그리기 (표시 상태일 때만)
+        if (isAvatarVisible && isMiniAvatar) {
             // 미니 모드: 현재 위치에 맞춰 그리기
             const miniWidth = 300;
             const miniHeight = 400;
 
+            // 안정 캐시 값 사용 (Dock 등 시스템 UI 변화로 인한 순간 출렁임 방지)
+            const winW = stableWindowWidth;
+            const winH = stableWindowHeight;
+
             // 현재 창 크기에 맞게 위치 클램프 (창 크기 변경 대응)
-            const clampedX = Math.min(miniAvatarPosition.x || 0, window.innerWidth - miniWidth);
-            const clampedY = Math.min(miniAvatarPosition.y || 0, window.innerHeight - miniHeight);
+            const clampedX = Math.min(miniAvatarPosition.x || 0, winW - miniWidth);
+            const clampedY = Math.min(miniAvatarPosition.y || 0, winH - miniHeight);
             const safeX = Math.max(0, clampedX);
             const safeY = Math.max(0, clampedY);
 
-            // 균일한 스케일 사용 (비율 유지)
-            const scaleX = compositeCanvas.width / window.innerWidth;
-            const scaleY = compositeCanvas.height / window.innerHeight;
-            const uniformScale = Math.min(scaleX, scaleY);
+            let miniX, miniY, scaledWidth, scaledHeight;
 
-            const scaledWidth = miniWidth * uniformScale;
-            const scaledHeight = miniHeight * uniformScale;
+            if (capturedScreenWidth > 0 && screenBg && screenBg.videoWidth) {
+                // 스크린 캡쳐 중: composite 캔버스 = 캡쳐 해상도
+                // 브라우저 뷰포트 좌표 → 캡쳐된 비디오 픽셀 좌표로 변환
+                const renderRect = getScreenVideoRenderRect(screenBg);
+                if (renderRect) {
+                    const { rx, ry, rw, rh } = renderRect;
+                    // 비디오 렌더 영역 기준 스케일 (1px browser = N px video)
+                    const scaleToVideo = capturedScreenWidth / rw;
+                    scaledWidth = miniWidth * scaleToVideo;
+                    scaledHeight = miniHeight * scaleToVideo;
 
-            // 위치 계산: 하단/우측 경계 기준으로 정렬
-            // 미니 아바타의 우측 끝이 창 우측에 있으면 녹화에서도 우측에
-            // 미니 아바타의 하단 끝이 창 하단에 있으면 녹화에서도 하단에
-            const rightEdge = safeX + miniWidth;
-            const bottomEdge = safeY + miniHeight;
-
-            // X 위치: 우측 경계 기준으로 계산
-            const miniX = (rightEdge / window.innerWidth) * compositeCanvas.width - scaledWidth;
-            // Y 위치: 하단 경계 기준으로 계산
-            const miniY = (bottomEdge / window.innerHeight) * compositeCanvas.height - scaledHeight;
+                    const rightEdge = safeX + miniWidth;
+                    const bottomEdge = safeY + miniHeight;
+                    miniX = ((rightEdge - rx) / rw) * capturedScreenWidth - scaledWidth;
+                    miniY = ((bottomEdge - ry) / rh) * capturedScreenHeight - scaledHeight;
+                } else {
+                    // 렌더 rect 없으면 비율 기반 fallback
+                    const scale = capturedScreenWidth / winW;
+                    scaledWidth = miniWidth * scale;
+                    scaledHeight = miniHeight * scale;
+                    miniX = ((safeX + miniWidth) / winW) * capturedScreenWidth - scaledWidth;
+                    miniY = ((safeY + miniHeight) / winH) * capturedScreenHeight - scaledHeight;
+                }
+            } else {
+                // 스크린 캡쳐 없음: 뷰포트 비율로 매핑 (기존 로직)
+                const scaleX = compositeCanvas.width / winW;
+                const scaleY = compositeCanvas.height / winH;
+                const uniformScale = Math.min(scaleX, scaleY);
+                scaledWidth = miniWidth * uniformScale;
+                scaledHeight = miniHeight * uniformScale;
+                const rightEdge = safeX + miniWidth;
+                const bottomEdge = safeY + miniHeight;
+                miniX = (rightEdge / winW) * compositeCanvas.width - scaledWidth;
+                miniY = (bottomEdge / winH) * compositeCanvas.height - scaledHeight;
+            }
 
             compositeCtx.drawImage(avatarCanvas, miniX, miniY, scaledWidth, scaledHeight);
-        } else {
+        } else if (isAvatarVisible) {
             // 풀 모드: 비율 유지하며 하단 정렬 (프리뷰와 동일하게)
             const avatarAspect = avatarCanvas.width / avatarCanvas.height;
             const canvasAspect = compositeCanvas.width / compositeCanvas.height;
@@ -1940,6 +2196,8 @@ function startRecording() {
 
     mediaRecorder.start(100);  // 100ms마다 데이터 수집
 
+    _postToOpener({ type: 'avatar-recorder:recording-started', sessionId: _integrationParams?.sessionId ?? null });
+
     // 녹화 중 컨트롤바 숨기기
     document.body.classList.add('recording');
 
@@ -1976,17 +2234,29 @@ function downloadRecording() {
     }
 
     const blob = new Blob(recordedChunks, { type: 'video/webm' });
-    const url = URL.createObjectURL(blob);
+    recordedChunks = [];
 
+    if (isIntegrationMode && window.opener) {
+        const filename = `avatar-recording-${Date.now()}.webm`;
+        _postToOpener({
+            type: 'avatar-recorder:result',
+            sessionId: _integrationParams.sessionId,
+            blob,
+            mimeType: 'video/webm',
+            filename,
+        });
+        _postToOpener({ type: 'avatar-recorder:recording-stopped', sessionId: _integrationParams.sessionId });
+        return;
+    }
+
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `avatar-recording-${Date.now()}.webm`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-
     URL.revokeObjectURL(url);
-    recordedChunks = [];
 }
 
 function updateScreenCaptureButtons(isCapturing) {
@@ -2076,8 +2346,12 @@ function setupScene(canvas) {
         console.log('[WebGL] Context restored');
     });
 
+    // IME 전환 등 순간적 레이아웃 변화에 의한 renderer 리사이즈 방지 (debounce 150ms)
+    let rendererResizeTimer = null;
     const resizeObserver = new ResizeObserver(() => {
-        if (sceneWrapper) {
+        if (!sceneWrapper) return;
+        clearTimeout(rendererResizeTimer);
+        rendererResizeTimer = setTimeout(() => {
             const newWidth = sceneWrapper.clientWidth;
             const newHeight = sceneWrapper.clientHeight;
             if (newWidth > 0 && newHeight > 0) {
@@ -2085,7 +2359,7 @@ function setupScene(canvas) {
                 camera.updateProjectionMatrix();
                 renderer.setSize(newWidth, newHeight);
             }
-        }
+        }, 150);
     });
     if (sceneWrapper) resizeObserver.observe(sceneWrapper);
 }
