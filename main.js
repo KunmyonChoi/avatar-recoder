@@ -160,6 +160,25 @@ let capturedScreenWidth = 0;     // 캡쳐된 화면 실제 너비
 let capturedScreenHeight = 0;    // 캡쳐된 화면 실제 높이
 let prevRendererSize = null;     // 세로 모드 적응 전 렌더러 크기 저장
 
+// --- Cross-Origin Integration (postMessage) ---
+const _integrationParams = (() => {
+    const p = new URLSearchParams(window.location.search);
+    const mode = p.get('mode');
+    const rawOrigin = p.get('origin');
+    if (mode !== 'popup' || !rawOrigin) return null;
+    try {
+        const url = new URL(rawOrigin);
+        return {
+            origin: url.origin,
+            sessionId: p.get('session') || null,
+            autoRecord: p.get('autoRecord') === '1',
+        };
+    } catch {
+        return null;
+    }
+})();
+const isIntegrationMode = !!_integrationParams;
+
 // --- Stable Window Dimensions (debounced) ---
 // window.innerWidth/Height를 매 프레임 직접 읽으면 Dock 등 시스템 UI 변화에 즉시 반응해
 // compositeFrame / 대화 렌더링에서 출렁임이 발생한다. 150ms debounce로 안정화.
@@ -855,7 +874,61 @@ function setupDialogue() {
 }
 
 // --- Initialization ---
+function _postToOpener(payload) {
+    if (!isIntegrationMode || !window.opener) return;
+    window.opener.postMessage(payload, _integrationParams.origin);
+}
+
+function initIntegrationMode() {
+    if (!isIntegrationMode) return;
+
+    // 팝업 모드 UI 배지 표시
+    const badge = document.createElement('div');
+    badge.id = 'integration-badge';
+    badge.textContent = `↩ ${_integrationParams.origin}`;
+    document.body.appendChild(badge);
+
+    // opener로부터 명령 수신
+    window.addEventListener('message', (e) => {
+        if (e.origin !== _integrationParams.origin) return;
+        const { type } = e.data || {};
+        if (type === 'avatar-recorder:start') {
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') startRecording();
+        } else if (type === 'avatar-recorder:stop') {
+            if (mediaRecorder && mediaRecorder.state === 'recording') stopRecording();
+        } else if (type === 'avatar-recorder:cancel') {
+            recordedChunks = [];
+            window.close();
+        }
+    });
+
+    // 창 닫힘 시 cancelled 알림
+    window.addEventListener('beforeunload', () => {
+        if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+            _postToOpener({ type: 'avatar-recorder:cancelled', sessionId: _integrationParams.sessionId });
+        }
+    });
+
+    // opener에 준비 완료 신호 전송
+    _postToOpener({ type: 'avatar-recorder:ready', sessionId: _integrationParams.sessionId });
+
+    // autoRecord 옵션 처리
+    if (_integrationParams.autoRecord) {
+        // MediaPipe 초기화 완료를 기다린 뒤 자동 시작
+        const waitAndRecord = () => {
+            if (mediaRecorder === null && document.getElementById('output_canvas')) {
+                startRecording();
+            } else {
+                setTimeout(waitAndRecord, 500);
+            }
+        };
+        setTimeout(waitAndRecord, 2000);
+    }
+}
+
 async function init() {
+    initIntegrationMode();
+
     // 모바일 모드 설정
     if (isMobile) {
         console.log('[Mobile] Mobile device detected:', isIOS ? 'iOS' : isAndroid ? 'Android' : 'Other');
@@ -2123,6 +2196,8 @@ function startRecording() {
 
     mediaRecorder.start(100);  // 100ms마다 데이터 수집
 
+    _postToOpener({ type: 'avatar-recorder:recording-started', sessionId: _integrationParams?.sessionId ?? null });
+
     // 녹화 중 컨트롤바 숨기기
     document.body.classList.add('recording');
 
@@ -2159,17 +2234,29 @@ function downloadRecording() {
     }
 
     const blob = new Blob(recordedChunks, { type: 'video/webm' });
-    const url = URL.createObjectURL(blob);
+    recordedChunks = [];
 
+    if (isIntegrationMode && window.opener) {
+        const filename = `avatar-recording-${Date.now()}.webm`;
+        _postToOpener({
+            type: 'avatar-recorder:result',
+            sessionId: _integrationParams.sessionId,
+            blob,
+            mimeType: 'video/webm',
+            filename,
+        });
+        _postToOpener({ type: 'avatar-recorder:recording-stopped', sessionId: _integrationParams.sessionId });
+        return;
+    }
+
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `avatar-recording-${Date.now()}.webm`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-
     URL.revokeObjectURL(url);
-    recordedChunks = [];
 }
 
 function updateScreenCaptureButtons(isCapturing) {
