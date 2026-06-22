@@ -4239,8 +4239,11 @@ function applyHeadRotation(matrix, deltaTime) {
 
     // Euler로 변환하여 축별 조정
     const euler = new THREE.Euler().setFromQuaternion(rot, 'YXZ');
+    const isVRM0 = currentVrm.meta?.metaVersion === '0';
 
-    euler.x *= -1;
+    // VRM0: rotateVRM0()로 180°Y 회전 → 헤드 본 X축 반전 보정 필요
+    // VRM1: normalized bone이 표준 공간 → 보정 불필요
+    if (isVRM0) euler.x *= -1;
     euler.y *= -1;
     euler.z *= -1;
 
