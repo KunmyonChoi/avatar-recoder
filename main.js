@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VRMLoaderPlugin, VRMUtils, VRMExpressionPresetName } from '@pixiv/three-vrm';
 import { FilesetResolver, FaceLandmarker, PoseLandmarker, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
 
@@ -117,6 +118,8 @@ function getFilteredPoseLandmarks(landmarks, worldLandmarks, timestamp) {
 
 // --- Globals ---
 let scene, camera, renderer;
+let orbitControls = null;
+let isOrbitEnabled = false;
 let video;
 let faceLandmarker, poseLandmarker, handLandmarker;
 let currentVrm;
@@ -1882,10 +1885,12 @@ async function init() {
 
             if (action === 'debug-on') {
                 isDebugView = true;
+                if (orbitControls) orbitControls.enabled = false;
                 updateDevOptions();
                 updateView();
             } else if (action === 'debug-off') {
                 isDebugView = false;
+                if (orbitControls) orbitControls.enabled = isOrbitEnabled;
                 updateDevOptions();
                 updateView();
             } else if (action === 'landmarks-on') {
@@ -2411,6 +2416,9 @@ function toggleAvatarSize() {
         }
     }
 
+    // 앵커 핸들 표시 업데이트
+    updateAnchorVisibility();
+
     // 대화 오버레이 위치 업데이트
     updateDialogueOverlayPosition();
 
@@ -2429,6 +2437,23 @@ function toggleAvatarSize() {
     syncAvatarOptionsUI();
 }
 
+function updateAnchorVisibility() {
+    const anchor = document.getElementById('avatar-anchor');
+    if (!anchor) return;
+    const show = isMiniAvatar && !isAvatarVisible;
+    if (show) {
+        if (miniAvatarPosition.x !== null) {
+            anchor.style.left = miniAvatarPosition.x + 'px';
+            anchor.style.top  = miniAvatarPosition.y + 'px';
+        }
+        anchor.classList.add('visible');
+        setupDragAndDrop(anchor);
+    } else {
+        anchor.classList.remove('visible');
+        removeDragAndDrop(anchor);
+    }
+}
+
 function toggleAvatarVisibility() {
     isAvatarVisible = !isAvatarVisible;
 
@@ -2436,6 +2461,7 @@ function toggleAvatarVisibility() {
     if (sceneWrapper) {
         sceneWrapper.style.visibility = isAvatarVisible ? '' : 'hidden';
     }
+    updateAnchorVisibility();
     syncAvatarOptionsUI();
 }
 
@@ -2484,6 +2510,19 @@ function setupAvatarControls() {
             syncAvatarOptionsUI();
         });
     });
+
+    // View (OrbitControls) 버튼
+    document.getElementById('orbit-controls-on')?.addEventListener('click', () => setOrbitEnabled(true));
+    document.getElementById('orbit-controls-off')?.addEventListener('click', () => setOrbitEnabled(false));
+}
+
+function setOrbitEnabled(enable) {
+    isOrbitEnabled = enable;
+    if (orbitControls) {
+        orbitControls.enabled = enable && !isDebugView;
+    }
+    document.getElementById('orbit-controls-on')?.classList.toggle('active', enable);
+    document.getElementById('orbit-controls-off')?.classList.toggle('active', !enable);
 }
 
 // 드래그&드롭 기능
@@ -2547,8 +2586,16 @@ function onDragMove(e) {
     miniAvatarPosition.x = newX;
     miniAvatarPosition.y = newY;
 
-    // 대화 오버레이 위치 업데이트
+    // 앵커 핸들 위치 동기화
+    const anchor = document.getElementById('avatar-anchor');
+    if (anchor && anchor.classList.contains('visible')) {
+        anchor.style.left = newX + 'px';
+        anchor.style.top  = newY + 'px';
+    }
+
+    // 오버레이 위치 업데이트
     updateDialogueOverlayPosition();
+    updateCaptionOverlayPosition();
 
     e.preventDefault();
 }
@@ -3317,7 +3364,7 @@ function setupScene(canvas) {
     scene = new THREE.Scene();
 
     camera = new THREE.PerspectiveCamera(30.0, width / height, 0.1, 20.0);
-    camera.position.set(0.0, 1.4, 1.5);
+    camera.position.set(0.0, 1.7, 1.5);
 
     const light = new THREE.DirectionalLight(0xffffff, 1.0);
     light.position.set(1.0, 1.0, 1.0).normalize();
@@ -3337,6 +3384,14 @@ function setupScene(canvas) {
     canvas.addEventListener('webglcontextrestored', () => {
         console.log('[WebGL] Context restored');
     });
+
+    // OrbitControls 초기화 (기본 비활성)
+    orbitControls = new OrbitControls(camera, canvas);
+    orbitControls.target.set(0, 1.4, 0);
+    orbitControls.enableDamping = true;
+    orbitControls.dampingFactor = 0.08;
+    orbitControls.enabled = false;
+    orbitControls.update();
 
     // IME 전환 등 순간적 레이아웃 변화에 의한 renderer 리사이즈 방지 (debounce 150ms)
     let rendererResizeTimer = null;
@@ -3632,6 +3687,10 @@ function animate() {
 
     if (currentVrm) {
         currentVrm.update(deltaTime);
+    }
+
+    if (orbitControls && orbitControls.enabled) {
+        orbitControls.update();
     }
 
     renderer.render(scene, camera);
