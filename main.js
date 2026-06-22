@@ -4240,8 +4240,7 @@ function applyHeadRotation(matrix, deltaTime) {
     // Euler로 변환하여 축별 조정
     const euler = new THREE.Euler().setFromQuaternion(rot, 'YXZ');
 
-    // 미러링: Y축(좌우 회전)과 Z축(좌우 기울기) 반전
-    // X축(위아래 끄덕임)은 그대로
+    euler.x *= -1;
     euler.y *= -1;
     euler.z *= -1;
 
