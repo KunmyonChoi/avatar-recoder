@@ -435,6 +435,9 @@ function updateCaptionOverlayPosition() {
 // --- Speech-to-Text Captions ---
 let isCaptionsEnabled = false;
 let isCaptionsStarting = false;  // 시작 중 race condition 방지
+let networkRetryCount = 0;
+let networkRetryTimer = null;
+const MAX_NETWORK_RETRIES = 5;
 let currentCaption = '';
 let captionTimeout = null;
 
@@ -452,6 +455,11 @@ function initSpeechRecognition() {
     speechRecognition.lang = 'ko-KR'; // Korean, can be changed
 
     speechRecognition.onresult = (event) => {
+        // 인식 성공 시 network 재시도 카운터 리셋
+        networkRetryCount = 0;
+        clearTimeout(networkRetryTimer);
+        networkRetryTimer = null;
+
         let interimTranscript = '';
         let finalTranscript = '';
 
@@ -484,8 +492,21 @@ function initSpeechRecognition() {
                 // 자동 재시도는 onend에서 처리됨
                 break;
             case 'network':
-                console.warn('[Captions] Network error, will retry...');
-                // 자동 재시도는 onend에서 처리됨
+                networkRetryCount++;
+                if (networkRetryCount > MAX_NETWORK_RETRIES) {
+                    console.error('[Captions] Too many network errors, stopping captions');
+                    stopCaptions();
+                    alert('음성 인식 네트워크 오류가 반복되어 Talk를 중지했습니다. 네트워크를 확인 후 다시 시도해주세요.');
+                } else {
+                    const delay = Math.min(1000 * Math.pow(2, networkRetryCount - 1), 16000);
+                    console.warn(`[Captions] Network error (${networkRetryCount}/${MAX_NETWORK_RETRIES}), retry in ${delay}ms`);
+                    clearTimeout(networkRetryTimer);
+                    networkRetryTimer = setTimeout(() => {
+                        if (isCaptionsEnabled && isMicEnabled) {
+                            try { speechRecognition.start(); } catch (_) {}
+                        }
+                    }, delay);
+                }
                 break;
             case 'aborted':
                 console.log('[Captions] Recognition aborted');
@@ -496,6 +517,9 @@ function initSpeechRecognition() {
     };
 
     speechRecognition.onend = () => {
+        // network 에러 백오프 타이머가 있으면 즉시 재시작하지 않음
+        if (networkRetryTimer) return;
+
         // Restart if still enabled AND mic is on (continuous mode can stop unexpectedly)
         if (isCaptionsEnabled && isMicEnabled && !isCaptionsStarting) {
             try {
@@ -555,6 +579,10 @@ function startCaptions() {
 }
 
 function stopCaptions() {
+    clearTimeout(networkRetryTimer);
+    networkRetryTimer = null;
+    networkRetryCount = 0;
+
     if (speechRecognition) {
         try {
             speechRecognition.stop();
