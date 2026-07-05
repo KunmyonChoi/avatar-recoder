@@ -217,9 +217,11 @@ let audioMixValue = 50;              // 0 = Mic only, 100 = Tab only
 let leftArmActive = false;
 let rightArmActive = false;
 
-// --- Body Sway Baseline (어깨 기준 몸 이동 추정, 이미지 단위) ---
-// 느리게 적응해 순간적 sway만 아바타에 반영하고 장기적 위치 변화는 중립화
-let swayBaseline = null;
+// --- Body Sway Baselines (이미지 단위, 느린 적응으로 순간적 움직임만 반영) ---
+let swayBaseline = null;     // 어깨 중점 (폴백 모드: 골반이 프레임 밖)
+let hipSwayBaseline = null;  // 골반 중점 (댄스 모드: hips를 직접 구동)
+let leanBaseline = null;     // 골반→어깨 기울기 각 (댄스 모드: 상체 lean 중립값)
+let danceMode = false;       // 골반 visibility hysteresis로 전환
 
 // --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
 // tasks-vision handedness 라벨은 해부학적 기준 → 미러 모드에서 좌우 스왑
@@ -3824,10 +3826,17 @@ function resetPose(deltaTime) {
         if (restPos) hips.position.lerp(restPos, factor);
     }
 
+    // Chest도 중립 복귀 (댄스 모드에서 어깨 라인 회전을 받던 본)
+    const chest = currentVrm.humanoid.getNormalizedBoneNode('chest');
+    if (chest) chest.quaternion.slerp(neutralLower, factor);
+
     // 활성 상태 리셋
     leftArmActive = false;
     rightArmActive = false;
     swayBaseline = null;
+    hipSwayBaseline = null;
+    leanBaseline = null;
+    danceMode = false;
 }
 
 // --- Debug 3D ---
@@ -3991,9 +4000,23 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const mpRHip = landmarks[24];
         const hipVis = Math.min(mpLHip.visibility ?? 1.0, mpRHip.visibility ?? 1.0);
 
-        // 상반신 프레이밍에서 hip이 프레임 밖이면 노이즈 회전 방지 — 중립 유지
-        // (hipsQuat이 identity로 남아 spine이 어깨 회전 전체를 받음)
-        if (hipVis > 0.5) {
+        // 댄스 모드: 골반이 안정적으로 보이면 골반/어깨 2-포인트 모델 활성 (hysteresis)
+        const wasDanceMode = danceMode;
+        if (!danceMode && hipVis > 0.6) {
+            danceMode = true;
+        } else if (danceMode && hipVis < 0.4) {
+            danceMode = false;
+        }
+        if (wasDanceMode !== danceMode) {
+            // 모드 전환 시 기준점이 달라지므로 baseline 재초기화로 점프 방지
+            swayBaseline = null;
+            hipSwayBaseline = null;
+            leanBaseline = null;
+        }
+
+        // 골반이 프레임 밖이면 노이즈 회전 방지 — 중립 유지
+        // (hipsQuat이 identity로 남아 상체가 어깨 회전 전체를 받음)
+        if (danceMode) {
             const rollH = (mpRHip.y - mpLHip.y) * 1.2 * (isVRM0 ? -1 : 1);
             const yawH = (mpRHip.z - mpLHip.z) * 1.0;
             hipsQuat.setFromEuler(new THREE.Euler(0, yawH, rollH, 'XYZ'));
@@ -4001,23 +4024,56 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         hips.quaternion.slerp(hipsQuat, factor * 0.5);
     }
 
-    // --- Spine 회전 (상체 기울기) ---
-    // hips가 이미 골반 회전을 반영하므로, spine은 어깨 회전에서 골반 회전을 뺀 잔여분만 적용
+    // --- Spine/Chest 회전 (상체) ---
+    // 댄스 모드: spine = 골반→어깨 기울기(lean), chest = 어깨 라인 회전 잔여분
+    //   → 골반과 어깨가 반대로 움직이는 S자(제자리 춤) 표현 가능
+    // 폴백 모드: spine이 어깨 회전에서 골반 회전을 뺀 잔여분을 받는 기존 방식
     const spine = currentVrm.humanoid.getNormalizedBoneNode('spine');
+    const chest = currentVrm.humanoid.getNormalizedBoneNode('chest');
     if (spine && landmarks) {
         const mpLeft = landmarks[11];  // 왼쪽 어깨
         const mpRight = landmarks[12]; // 오른쪽 어깨
 
-        // 미러링 적용: 좌우 반전
-        const dy = mpRight.y - mpLeft.y;  // 반전
-        const dz = mpRight.z - mpLeft.z;  // 반전
+        // 어깨 라인 회전 (미러링: 좌우 반전)
+        const dy = mpRight.y - mpLeft.y;
+        const dz = mpRight.z - mpLeft.z;
 
         const roll = dy * 1.2 * (isVRM0 ? -1 : 1);  // Z축 회전 (VRM 0.x: 방향 반전)
         const yaw = dz * 1.0;   // Y축 회전 (어깨 회전)
 
         const qShoulder = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, roll, 'XYZ'));
-        const q = hipsQuat.clone().invert().multiply(qShoulder);
-        spine.quaternion.slerp(q, factor * 0.5); // 상체는 더 부드럽게
+
+        if (danceMode) {
+            // 골반→어깨 벡터의 좌우 기울기 각 (이미지 단위, aspect 보정)
+            const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+            const vX = ((mpLeft.x + mpRight.x) / 2 - (landmarks[23].x + landmarks[24].x) / 2) * aspect;
+            const uY = (landmarks[23].y + landmarks[24].y) / 2 - (mpLeft.y + mpRight.y) / 2; // 이미지 y는 아래+ → 어깨가 위면 양수
+            const leanAngle = Math.atan2(vX, Math.max(uY, 1e-4));
+
+            // 중립 기울기 baseline (카메라 기울기·개인 자세 흡수, τ≈10s)
+            if (leanBaseline === null) leanBaseline = leanAngle;
+            const alphaL = 1 - Math.exp(-deltaTime / 10);
+            leanBaseline += (leanAngle - leanBaseline) * alphaL;
+
+            // 미러링(-x)과 Rz(+θ가 상단을 -X로 기울임)의 부호가 상쇄되어 이미지 각도를 그대로 사용
+            const lean = THREE.MathUtils.clamp(leanAngle - leanBaseline, -Math.PI / 6, Math.PI / 6);
+            const qLean = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, lean * (isVRM0 ? -1 : 1)));
+
+            // 어깨 라인 회전은 (hips × spine) 위에 얹는 잔여분
+            const qResidual = hipsQuat.clone().multiply(qLean).invert().multiply(qShoulder);
+            if (chest) {
+                spine.quaternion.slerp(qLean, factor * 0.5);
+                chest.quaternion.slerp(qResidual, factor * 0.5);
+            } else {
+                // chest 본이 없는 모델은 spine에 합성
+                spine.quaternion.slerp(qLean.clone().multiply(qResidual), factor * 0.5);
+            }
+        } else {
+            // hips가 이미 골반 회전을 반영하므로, spine은 어깨 회전에서 골반 회전을 뺀 잔여분만 적용
+            const q = hipsQuat.clone().invert().multiply(qShoulder);
+            spine.quaternion.slerp(q, factor * 0.5); // 상체는 더 부드럽게
+            if (chest) chest.quaternion.slerp(IDENTITY_QUAT, factor * 0.3);
+        }
     }
 
     // --- Visibility 체크 (Hysteresis 적용) ---
@@ -4108,19 +4164,27 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const shoulderVis = Math.min(landmarks[11].visibility ?? 1.0, landmarks[12].visibility ?? 1.0);
         const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
 
-        if (shoulderVis > 0.5) {
-            // 이미지 단위 (x는 aspect 보정으로 y와 등방화)
-            const refX = (landmarks[11].x + landmarks[12].x) / 2 * aspect;
-            const refY = (landmarks[11].y + landmarks[12].y) / 2;
+        // 기준점 선택 (이미지 단위, x는 aspect 보정으로 y와 등방화):
+        // 댄스 모드 = 골반 중점 → 골반 sway가 hips를 직접 구동 (상체 lean은 spine이 별도 표현)
+        // 폴백 모드 = 어깨 중점 → 몸 전체가 한 덩어리로 sway
+        let refX = null, refY = null, baseline = null;
+        if (danceMode) {
+            refX = (landmarks[23].x + landmarks[24].x) / 2 * aspect;
+            refY = (landmarks[23].y + landmarks[24].y) / 2;
+            if (!hipSwayBaseline) hipSwayBaseline = { x: refX, y: refY };
+            baseline = hipSwayBaseline;
+        } else if (shoulderVis > 0.5) {
+            refX = (landmarks[11].x + landmarks[12].x) / 2 * aspect;
+            refY = (landmarks[11].y + landmarks[12].y) / 2;
+            if (!swayBaseline) swayBaseline = { x: refX, y: refY };
+            baseline = swayBaseline;
+        }
 
-            if (!swayBaseline) {
-                swayBaseline = { x: refX, y: refY };
-            } else {
-                // 느린 적응 (τ≈10s): 순간적 sway는 표현, 장기적 위치 변화는 중립화
-                const alpha = 1 - Math.exp(-deltaTime / 10);
-                swayBaseline.x += (refX - swayBaseline.x) * alpha;
-                swayBaseline.y += (refY - swayBaseline.y) * alpha;
-            }
+        if (baseline) {
+            // 느린 적응 (τ≈10s): 순간적 sway는 표현, 장기적 위치 변화는 중립화
+            const alpha = 1 - Math.exp(-deltaTime / 10);
+            baseline.x += (refX - baseline.x) * alpha;
+            baseline.y += (refY - baseline.y) * alpha;
 
             // 이미지 단위 → 미터: 영상 속 어깨 폭과 아바타 어깨 폭(양쪽 upperArm 거리)의 비율
             const shoulderWidthImg = Math.abs(landmarks[11].x - landmarks[12].x) * aspect;
@@ -4131,9 +4195,10 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
                 scale = rW.distanceTo(lW) / shoulderWidthImg;
             }
 
-            // 미러링(-x), 이미지 y(아래+) → 월드 y(위+)
-            const offX = THREE.MathUtils.clamp(-(refX - swayBaseline.x) * scale, -0.25, 0.25);
-            const offY = THREE.MathUtils.clamp(-(refY - swayBaseline.y) * scale, -0.3, 0.1);
+            // 미러링(-x), 이미지 y(아래+) → 월드 y(위+); 댄스 모드는 골반 sway 범위 확대
+            const maxSwayX = danceMode ? 0.3 : 0.25;
+            const offX = THREE.MathUtils.clamp(-(refX - baseline.x) * scale, -maxSwayX, maxSwayX);
+            const offY = THREE.MathUtils.clamp(-(refY - baseline.y) * scale, -0.3, 0.1);
 
             // rig 로컬 x는 VRM0(scene 180°Y 회전)에서 월드와 반대
             const xDir = isVRM0 ? -1 : 1;
