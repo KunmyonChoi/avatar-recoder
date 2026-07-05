@@ -4686,11 +4686,12 @@ function applyHeadRotation(matrix, deltaTime) {
     const euler = new THREE.Euler().setFromQuaternion(rot, 'YXZ');
     const isVRM0 = currentVrm.meta?.metaVersion === '0';
 
-    // VRM0: rotateVRM0()로 180°Y 회전 → 헤드 본 X축 반전 보정 필요
-    // VRM1: normalized bone이 표준 공간 → 보정 불필요
+    // 180°Y conjugation(rotateVRM0)은 X·Z 회전 부호를 반전(Y는 불변),
+    // 미러링은 Y·Z를 반전(X는 불변) →
+    //   VRM1: y·z만 반전 / VRM0: x·y 반전, z는 두 반전이 상쇄되어 그대로
     if (isVRM0) euler.x *= -1;
     euler.y *= -1;
-    euler.z *= -1;
+    if (!isVRM0) euler.z *= -1;
 
     // 회전 범위 제한 (과도한 회전 방지)
     euler.x = THREE.MathUtils.clamp(euler.x, -Math.PI / 4, Math.PI / 4);
