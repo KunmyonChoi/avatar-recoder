@@ -22,6 +22,7 @@ const VIS_THRESHOLD_OFF = 0.45; // 비활성화 임계값 (hysteresis)
 const DANCE_VIS_ON = 0.6;       // 골반 visibility 댄스 모드 진입 임계값
 const DANCE_VIS_OFF = 0.4;      // 댄스 모드 해제 임계값 (hysteresis)
 const BASELINE_ADAPT_SPEED = 0.1; // sway/lean baseline 적응 속도 (τ≈10s)
+const AVATAR_HEAD_HEIGHT = 1.39;  // 아바타 머리 기준 높이(m) — 모델 신장 차이를 흡수해 얼굴 위치 통일
 
 // --- One Euro Filter (떨림 완화) ---
 class OneEuroFilter {
@@ -3642,6 +3643,16 @@ async function loadAvatar(url = './avatar.vrm') {
         scene.add(vrm.scene);
         currentVrm = vrm;
         currentAvatarUrl = url;
+
+        // 모델별 신장 차이 보정: 머리 본이 기준 높이(AVATAR_HEAD_HEIGHT)에 오도록 수직 오프셋
+        // (남성 모델이 여성보다 ~17cm 커서 얼굴이 위에 보이던 문제 — 스케일 조정은
+        //  다리 IK의 본 길이/월드 좌표 정합을 깨므로 오프셋 방식 사용)
+        const headBone = vrm.humanoid.getNormalizedBoneNode('head');
+        if (headBone) {
+            vrm.scene.updateWorldMatrix(true, true);
+            const headY = headBone.getWorldPosition(new THREE.Vector3()).y;
+            vrm.scene.position.y = AVATAR_HEAD_HEIGHT - headY;
+        }
 
         // Hips rest 위치 저장 (로드 직후 = rest 자세 보장, hips 이동의 기준점)
         const hipsBone = vrm.humanoid.getNormalizedBoneNode('hips');
