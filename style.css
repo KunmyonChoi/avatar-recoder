@@ -653,18 +653,6 @@ body.dialogue-enabled.input-typing #dialogue-input-container {
   min-width: 30px;
 }
 
-.beta-badge {
-  display: inline-block;
-  font-size: 9px;
-  font-weight: 600;
-  color: #fff;
-  background: rgba(255, 160, 0, 0.75);
-  border-radius: 4px;
-  padding: 1px 4px;
-  vertical-align: middle;
-  letter-spacing: 0.03em;
-}
-
 #avatar-anchor {
   display: none;
   position: fixed;
