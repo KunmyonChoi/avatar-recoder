@@ -218,9 +218,10 @@ let leftArmActive = false;
 let rightArmActive = false;
 
 // --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
+// tasks-vision handedness 라벨은 해부학적 기준 → 미러 모드에서 좌우 스왑
 let detectedHands = {
-    left: null,   // 아바타 왼손 (라벨 "Left" = 사용자 오른손)
-    right: null   // 아바타 오른손 (라벨 "Right" = 사용자 왼손)
+    left: null,   // 아바타 왼손 (라벨 "Right" = 사용자 오른손)
+    right: null   // 아바타 오른손 (라벨 "Left" = 사용자 왼손)
 };
 
 // --- Unified Dialogue System ---
@@ -3657,15 +3658,16 @@ function animate() {
                 if (handLandmarker) {
                     const handResults = handLandmarker.detectForVideo(video, currentTime);
                     if (handResults.landmarks && handResults.landmarks.length > 0) {
-                        // 아바타 기준 좌우로 저장 (라벨 "Left" → 아바타 왼손)
+                        // 아바타 기준 좌우로 저장 — tasks-vision 라벨은 해부학적 기준이라
+                        // 미러 모드에서 사용자 왼손("Left")이 아바타 오른손이 됨
                         for (let i = 0; i < handResults.landmarks.length; i++) {
                             const handedness = handResults.handednesses[i][0];
                             const landmarks = handResults.landmarks[i];
 
                             if (handedness.categoryName === 'Left') {
-                                detectedHands.left = landmarks;
-                            } else {
                                 detectedHands.right = landmarks;
+                            } else {
+                                detectedHands.left = landmarks;
                             }
                         }
 
@@ -4070,9 +4072,9 @@ function applyHands(landmarksArray, handednesses, deltaTime) {
         const landmarks = landmarksArray[i];
         const handedness = handednesses[i][0];
 
-        // MediaPipe handedness는 미러(셀피) 영상 기준 라벨이므로, 비미러 웹캠 입력에서는
-        // 라벨 "Right" = 사용자의 왼손. 미러 모드에서 사용자의 왼손은 아바타의 오른손이 됨.
-        const isAvatarRightHand = handedness.categoryName === 'Right';
+        // tasks-vision handedness 라벨은 해부학적 기준: "Left" = 사용자의 왼손.
+        // 미러 모드에서 사용자의 왼손은 아바타의 오른손이 됨.
+        const isAvatarRightHand = handedness.categoryName === 'Left';
         const prefix = isAvatarRightHand ? 'right' : 'left';
 
         // 아바타 오른팔은 MediaPipe left body(leftArmActive)가 구동 — 팔이 활성일 때만 손목 회전 적용
