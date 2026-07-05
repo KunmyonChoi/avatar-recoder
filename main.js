@@ -217,10 +217,10 @@ let audioMixValue = 50;              // 0 = Mic only, 100 = Tab only
 let leftArmActive = false;
 let rightArmActive = false;
 
-// --- Hand Tracking 결과 저장 (Body Tracking과 통합용) ---
+// --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
 let detectedHands = {
-    left: null,   // MediaPipe Left Hand → Avatar Right
-    right: null   // MediaPipe Right Hand → Avatar Left
+    left: null,   // 아바타 왼손 (라벨 "Left" = 사용자 오른손)
+    right: null   // 아바타 오른손 (라벨 "Right" = 사용자 왼손)
 };
 
 // --- Unified Dialogue System ---
@@ -3546,9 +3546,11 @@ async function setupMediaPipe() {
             numFaces: 1
         });
 
+        // 모바일은 성능 우선(lite), 데스크톱은 정확도 우선(full) — lite는 팔꿈치/손목 depth 오차가 큼
+        const poseModel = isMobile ? 'pose_landmarker_lite' : 'pose_landmarker_full';
         poseLandmarker = await PoseLandmarker.createFromOptions(filesetResolver, {
             baseOptions: {
-                modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+                modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/${poseModel}/float16/1/${poseModel}.task`,
                 delegate: "GPU"
             },
             runningMode: "VIDEO",
@@ -3655,12 +3657,11 @@ function animate() {
                 if (handLandmarker) {
                     const handResults = handLandmarker.detectForVideo(video, currentTime);
                     if (handResults.landmarks && handResults.landmarks.length > 0) {
-                        // Hand 결과 저장 (Pose에서 사용)
+                        // 아바타 기준 좌우로 저장 (라벨 "Left" → 아바타 왼손)
                         for (let i = 0; i < handResults.landmarks.length; i++) {
                             const handedness = handResults.handednesses[i][0];
                             const landmarks = handResults.landmarks[i];
 
-                            // MediaPipe Left → Avatar Right, MediaPipe Right → Avatar Left
                             if (handedness.categoryName === 'Left') {
                                 detectedHands.left = landmarks;
                             } else {
@@ -3678,6 +3679,10 @@ function animate() {
                             }
                         }
                     }
+
+                    // 이번 프레임에 검출되지 않은 손은 rest 자세로 복귀
+                    if (!detectedHands.left) relaxHand('left', deltaTime);
+                    if (!detectedHands.right) relaxHand('right', deltaTime);
                 }
 
                 // Pose tracking
@@ -3821,7 +3826,13 @@ function updateDebug3D(worldLandmarks) {
 // ============================================================
 // 개선된 Two-Bone IK Solver
 // ============================================================
-function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPos, polePos, boneAxis, deltaTime) {
+// 팔이 거의 일직선일 때 planeNormal이 노이즈로 요동치는 것을 막기 위한 팔별 상태
+const ikPlaneState = {
+    right: { normal: null },
+    left: { normal: null }
+};
+
+function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPos, polePos, boneAxis, deltaTime, planeState) {
     if (!upperBone || !lowerBone) return;
 
     const factor = getLerpFactor(deltaTime);
@@ -3858,14 +3869,22 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     // 평면 법선 계산
     let planeNormal = new THREE.Vector3().crossVectors(dirToTarget, dirToPole);
 
-    if (planeNormal.lengthSq() < 0.0001) {
-        // 팔꿈치가 직선상에 있는 경우 대체 벡터 사용
-        planeNormal.crossVectors(dirToTarget, new THREE.Vector3(0, 1, 0));
-        if (planeNormal.lengthSq() < 0.0001) {
-            planeNormal.crossVectors(dirToTarget, new THREE.Vector3(0, 0, 1));
+    // 팔이 거의 일직선이면(sin < ~0.1) 측정된 pole이 노이즈에 지배되므로
+    // 마지막 유효 normal을 유지해 팔 떨림/뒤집힘을 방지
+    if (planeNormal.lengthSq() < 0.01) {
+        if (planeState && planeState.normal) {
+            planeNormal.copy(planeState.normal);
+        } else {
+            planeNormal.crossVectors(dirToTarget, new THREE.Vector3(0, 1, 0));
+            if (planeNormal.lengthSq() < 0.0001) {
+                planeNormal.crossVectors(dirToTarget, new THREE.Vector3(0, 0, 1));
+            }
         }
     }
     planeNormal.normalize();
+    if (planeState) {
+        planeState.normal = planeState.normal ? planeState.normal.copy(planeNormal) : planeNormal.clone();
+    }
 
     // 5. Upper Arm (어깨) 방향 계산
     // 목표 방향에서 shoulderAngle만큼 회전
@@ -3984,7 +4003,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime);
+        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime, ikPlaneState.right);
     } else if (rUpper && !leftArmActive) {
         // 팔 내리기
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
@@ -4011,7 +4030,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime);
+        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime, ikPlaneState.left);
     } else if (lUpper && !rightArmActive) {
         // 팔 내리기
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
@@ -4051,17 +4070,22 @@ function applyHands(landmarksArray, handednesses, deltaTime) {
         const landmarks = landmarksArray[i];
         const handedness = handednesses[i][0];
 
-        // 손 위치로 좌우 판단 (wrist x 좌표)
-        const wristX = landmarks[0].x;  // 0~1, 왼쪽이 0, 오른쪽이 1
-
-        // 미러링: Body tracking과 일치하도록
-        // MediaPipe "Left" = 사용자의 왼손 → Avatar의 왼손 (미러 모드)
-        // MediaPipe "Right" = 사용자의 오른손 → Avatar의 오른손 (미러 모드)
+        // MediaPipe handedness는 미러(셀피) 영상 기준 라벨이므로, 비미러 웹캠 입력에서는
+        // 라벨 "Right" = 사용자의 왼손. 미러 모드에서 사용자의 왼손은 아바타의 오른손이 됨.
         const isAvatarRightHand = handedness.categoryName === 'Right';
         const prefix = isAvatarRightHand ? 'right' : 'left';
 
-        // Hand bone에 고정 회전 적용 (손바닥이 앞을 향하도록)
-        applyHandFixedRotation(prefix, factor);
+        // 아바타 오른팔은 MediaPipe left body(leftArmActive)가 구동 — 팔이 활성일 때만 손목 회전 적용
+        const armActive = isAvatarRightHand ? leftArmActive : rightArmActive;
+
+        if (armActive) {
+            // 손 랜드마크 기반 실제 손목 방향 적용
+            applyHandOrientation(prefix, landmarks, factor);
+        } else {
+            // 내려간 팔에 맞지 않는 손목 회전이 남지 않도록 rest로 복귀
+            const handBone = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'Hand');
+            if (handBone) handBone.quaternion.slerp(IDENTITY_QUAT, factor * 0.3);
+        }
 
         // 손가락 처리 (거리 기반)
         applyFingers(prefix, landmarks, factor);
@@ -4072,27 +4096,76 @@ function applyHands(landmarksArray, handednesses, deltaTime) {
     }
 }
 
-// Hand bone에 고정 회전 적용 (손바닥이 앞을 향하도록)
-function applyHandFixedRotation(prefix, factor) {
+// Hand landmark(이미지 정규화 좌표)를 VRM 방향 벡터용 좌표로 변환
+// x는 영상 너비, y는 높이 기준 정규화라 스케일이 달라 aspect 보정 필요 (z는 x와 유사 스케일)
+// 부호 변환은 mpToVRM과 동일 (미러링 + y/z 반전)
+function handLmToVRM(lm) {
+    const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+    return new THREE.Vector3(-lm.x * aspect, -lm.y, -lm.z * aspect);
+}
+
+// 손 랜드마크로부터 실제 손목 방향(손가락 방향 + 손바닥 법선)을 계산해 Hand bone에 적용
+function applyHandOrientation(prefix, landmarks, factor) {
     if (!currentVrm) return;
 
     const handBone = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'Hand');
     if (!handBone) return;
 
     const isRight = prefix === 'right';
-    const isVRM0 = currentVrm?.meta?.metaVersion === '0';
+    const isVRM0 = currentVrm.meta?.metaVersion === '0';
 
-    // T-Pose에서 손바닥은 아래를 향함
-    // 손바닥이 앞(카메라)을 향하려면 X축으로 -90도 회전 (VRM 0.x: +90도로 반전)
-    const yTwist = isRight ? -0.3 : 0.3;
+    const wrist = handLmToVRM(landmarks[0]);
+    const indexMcp = handLmToVRM(landmarks[5]);
+    const middleMcp = handLmToVRM(landmarks[9]);
+    const pinkyMcp = handLmToVRM(landmarks[17]);
 
-    const handRot = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        isVRM0 ? Math.PI / 2 : -Math.PI / 2,  // X축: VRM 0.x는 방향 반전
-        yTwist,
-        0
-    ));
+    const fingerDir = new THREE.Vector3().subVectors(middleMcp, wrist);
+    const toIndex = new THREE.Vector3().subVectors(indexMcp, wrist);
+    const toPinky = new THREE.Vector3().subVectors(pinkyMcp, wrist);
+    if (fingerDir.lengthSq() < 1e-8) return;
+    fingerDir.normalize();
 
-    handBone.quaternion.slerp(handRot, factor * 0.3);
+    // 손바닥 법선: 오른손은 index×pinky, 왼손은 반대 (미러링된 좌표계 기준 chirality)
+    const palmNormal = isRight
+        ? new THREE.Vector3().crossVectors(toIndex, toPinky)
+        : new THREE.Vector3().crossVectors(toPinky, toIndex);
+    if (palmNormal.lengthSq() < 1e-8) return;
+    palmNormal.normalize();
+
+    // Rest 자세: 손가락 ±X 방향, 손바닥 -Y (rig는 rotateVRM0 이전 프레임 기준이라 VRM0는 X 반전)
+    const boneAxis = new THREE.Vector3((isRight ? -1 : 1) * (isVRM0 ? -1 : 1), 0, 0);
+    const qAim = new THREE.Quaternion().setFromUnitVectors(boneAxis, fingerDir);
+
+    // 손바닥 방향 twist 정렬 (fingerDir에 수직인 성분만 사용해 순수 twist 보장)
+    const palmProj = palmNormal.clone().addScaledVector(fingerDir, -palmNormal.dot(fingerDir));
+    if (palmProj.lengthSq() > 1e-6) {
+        palmProj.normalize();
+        const currentPalm = new THREE.Vector3(0, -1, 0).applyQuaternion(qAim);
+        const qTwist = new THREE.Quaternion().setFromUnitVectors(currentPalm, palmProj);
+        qAim.premultiply(qTwist);
+    }
+
+    const parentWorldQuat = getParentWorldQuaternion(handBone);
+    const qLocal = worldToLocalQuaternion(qAim, parentWorldQuat);
+    handBone.quaternion.slerp(qLocal, factor * 0.5);
+}
+
+// 손이 화면에서 사라졌을 때 손목/손가락을 rest 자세로 복귀
+const IDENTITY_QUAT = new THREE.Quaternion();
+function relaxHand(prefix, deltaTime) {
+    if (!currentVrm) return;
+
+    const factor = getLerpFactor(deltaTime, 5); // 천천히 복귀
+
+    const handBone = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'Hand');
+    if (handBone) handBone.quaternion.slerp(IDENTITY_QUAT, factor);
+
+    for (const fingerName of Object.keys(FINGER_CONFIG)) {
+        for (const boneType of ['Proximal', 'Intermediate', 'Distal']) {
+            const bone = currentVrm.humanoid.getNormalizedBoneNode(prefix + fingerName + boneType);
+            if (bone) bone.quaternion.slerp(IDENTITY_QUAT, factor);
+        }
+    }
 }
 
 // 손가락 설정 (MCP, PIP, DIP, TIP 인덱스)
@@ -4110,34 +4183,36 @@ function applyFingers(prefix, landmarks, factor) {
 
     const isRight = prefix === 'right';
 
+    // 이미지 정규화 좌표는 x/y 스케일이 달라(1280 vs 720) 거리 계산 전에 aspect 보정
+    const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+    const lmVec = (i) => new THREE.Vector3(landmarks[i].x * aspect, landmarks[i].y, landmarks[i].z * aspect);
+
     for (const [fingerName, config] of Object.entries(FINGER_CONFIG)) {
-        const { mcp, tip, isThumb } = config;
+        const { isThumb } = config;
         const joints = FINGER_JOINTS[fingerName];
 
         // 각 관절 위치
-        const mcpPos = new THREE.Vector3(landmarks[joints.mcp].x, landmarks[joints.mcp].y, landmarks[joints.mcp].z);
-        const pipPos = new THREE.Vector3(landmarks[joints.pip].x, landmarks[joints.pip].y, landmarks[joints.pip].z);
-        const dipPos = new THREE.Vector3(landmarks[joints.dip].x, landmarks[joints.dip].y, landmarks[joints.dip].z);
-        const tipPos = new THREE.Vector3(landmarks[joints.tip].x, landmarks[joints.tip].y, landmarks[joints.tip].z);
+        const mcpPos = lmVec(joints.mcp);
+        const pipPos = lmVec(joints.pip);
+        const dipPos = lmVec(joints.dip);
+        const tipPos = lmVec(joints.tip);
 
         // 각 세그먼트의 실제 길이 (굽혀도 변하지 않음)
         const seg1 = mcpPos.distanceTo(pipPos);  // MCP-PIP
         const seg2 = pipPos.distanceTo(dipPos);  // PIP-DIP
         const seg3 = dipPos.distanceTo(tipPos);  // DIP-TIP
         const totalLength = seg1 + seg2 + seg3;  // 손가락 전체 길이 (고정)
+        if (totalLength < 1e-6) continue;
 
         // MCP에서 TIP까지 직선 거리 (굽히면 줄어듦)
         const straightDist = mcpPos.distanceTo(tipPos);
 
-        // Curl: 직선 거리 / 전체 길이
-        // 펴진 상태: straightDist ≈ totalLength → curl ≈ 0
-        // 굽힌 상태: straightDist << totalLength → curl → 1
-        let curl = 1 - (straightDist / totalLength);
-        curl = THREE.MathUtils.clamp(curl, 0, 1);
-
-        // curl 값 증폭 (더 민감하게)
-        curl = Math.pow(curl, 0.7) * 1.5;
-        curl = THREE.MathUtils.clamp(curl, 0, 1);
+        // Curl raw: 펴진 손가락도 자연 굴곡으로 ~0.03-0.08, 주먹은 ~0.6 (엄지는 ~0.35)
+        // 실측 범위를 0..1로 리매핑 — 기존 pow(x,0.7)*1.5 증폭은 편 손가락도 30% 굽혀 보이게 했음
+        const rawCurl = 1 - (straightDist / totalLength);
+        let curl = isThumb
+            ? THREE.MathUtils.clamp((rawCurl - 0.04) / 0.30, 0, 1)
+            : THREE.MathUtils.clamp((rawCurl - 0.07) / 0.50, 0, 1);
 
         // 각 관절에 curl 적용
         if (isThumb) {
@@ -4152,6 +4227,8 @@ function applyFingers(prefix, landmarks, factor) {
 function applyFingerCurl(prefix, fingerName, curl, factor) {
     const boneTypes = ['Proximal', 'Intermediate', 'Distal'];
     const isRight = prefix === 'right';
+    // rig의 rest 방향이 VRM0는 반대라 curl 회전 부호도 반전 (팔의 zDir 보정과 동일한 이유)
+    const dir = (isRight ? 1 : -1) * (currentVrm.meta?.metaVersion === '0' ? -1 : 1);
 
     // 각 관절의 최대 굽힘 각도
     const maxAngles = [Math.PI * 0.45, Math.PI * 0.55, Math.PI * 0.45];
@@ -4165,7 +4242,7 @@ function applyFingerCurl(prefix, fingerName, curl, factor) {
             const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
                 0,
                 0,
-                isRight ? angle : -angle
+                angle * dir
             ));
             bone.quaternion.slerp(rotation, factor);
         }
@@ -4175,41 +4252,31 @@ function applyFingerCurl(prefix, fingerName, curl, factor) {
 // 엄지 curl 적용
 function applyThumbCurl(prefix, curl, factor) {
     const isRight = prefix === 'right';
+    // rig의 rest 방향이 VRM0는 반대라 회전 부호도 반전
+    const dir = (isRight ? -1 : 1) * (currentVrm.meta?.metaVersion === '0' ? -1 : 1);
 
     const proximal = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'ThumbProximal');
     const intermediate = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'ThumbIntermediate');
     const distal = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'ThumbDistal');
 
-    // 엄지는 손바닥에서 비스듬히 나오므로 복합 회전 필요
-    // 손바닥이 앞을 향하는 상태에서 엄지가 손바닥 안쪽으로 접히도록
+    // 엄지는 손바닥에서 비스듬히 나오므로 Y축 회전으로 손바닥 안쪽으로 접힘
+    const maxAngles = { proximal: 0.4, intermediate: 0.45, distal: 0.4 };
+
     if (proximal) {
-        const angle = curl * Math.PI * 0.4;
-        // Y축 회전으로 손바닥 안쪽으로 접힘
-        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-            0,
-            isRight ? -angle : angle,  // Y축 회전
-            0
-        ));
+        const angle = curl * Math.PI * maxAngles.proximal;
+        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle * dir, 0));
         proximal.quaternion.slerp(rotation, factor);
     }
 
     if (intermediate) {
-        const angle = curl * Math.PI * 0.45;
-        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-            0,
-            isRight ? -angle : angle,
-            0
-        ));
+        const angle = curl * Math.PI * maxAngles.intermediate;
+        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle * dir, 0));
         intermediate.quaternion.slerp(rotation, factor);
     }
 
     if (distal) {
-        const angle = curl * Math.PI * 0.4;
-        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-            0,
-            isRight ? -angle : angle,
-            0
-        ));
+        const angle = curl * Math.PI * maxAngles.distal;
+        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle * dir, 0));
         distal.quaternion.slerp(rotation, factor);
     }
 }
