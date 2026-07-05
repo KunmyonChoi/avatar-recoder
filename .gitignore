@@ -26,6 +26,7 @@ dist-ssr
 # AI assistant folders
 .claude
 .cursor
+.omc
 
 # Environment files
 .env
