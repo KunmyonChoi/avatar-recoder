@@ -217,6 +217,10 @@ let audioMixValue = 50;              // 0 = Mic only, 100 = Tab only
 let leftArmActive = false;
 let rightArmActive = false;
 
+// --- Leg Activity State (for hysteresis, MediaPipe 기준 좌/우) ---
+let leftLegActive = false;
+let rightLegActive = false;
+
 // --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
 // tasks-vision handedness 라벨은 해부학적 기준 → 미러 모드에서 좌우 스왑
 let detectedHands = {
@@ -3788,9 +3792,17 @@ function resetPose(deltaTime) {
     if (rightLowerArm) rightLowerArm.quaternion.slerp(neutralLower, factor);
     if (leftLowerArm) leftLowerArm.quaternion.slerp(neutralLower, factor);
 
+    // 다리는 곧게 선 자세(rest)로 복귀
+    for (const boneName of ['rightUpperLeg', 'rightLowerLeg', 'leftUpperLeg', 'leftLowerLeg']) {
+        const bone = currentVrm.humanoid.getNormalizedBoneNode(boneName);
+        if (bone) bone.quaternion.slerp(neutralLower, factor);
+    }
+
     // 활성 상태 리셋
     leftArmActive = false;
     rightArmActive = false;
+    leftLegActive = false;
+    rightLegActive = false;
 }
 
 // --- Debug 3D ---
@@ -3828,10 +3840,12 @@ function updateDebug3D(worldLandmarks) {
 // ============================================================
 // 개선된 Two-Bone IK Solver
 // ============================================================
-// 팔이 거의 일직선일 때 planeNormal이 노이즈로 요동치는 것을 막기 위한 팔별 상태
+// 팔다리가 거의 일직선일 때 planeNormal이 노이즈로 요동치는 것을 막기 위한 체인별 상태
 const ikPlaneState = {
     right: { normal: null },
-    left: { normal: null }
+    left: { normal: null },
+    rightLeg: { normal: null },
+    leftLeg: { normal: null }
 };
 
 function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPos, polePos, boneAxis, deltaTime, planeState) {
@@ -3908,16 +3922,12 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
 
     upperBone.quaternion.slerp(qUpperLocal, factor);
 
-    // 8. Lower Arm (팔꿈치) 회전 계산
-    // 팔꿈치는 단순히 구부러지는 각도만 적용 (hinge joint)
-    // 팔꿈치 각도: π - elbowAngle (펴진 상태가 π)
+    // 8. Lower Bone (팔꿈치/무릎) 회전 계산
+    // hinge joint: 굽힘 각도 = π - elbowAngle (펴진 상태가 π)
+    // qUpperFinal이 로컬 hingeAxis를 world planeNormal에 정렬시켰으므로,
+    // 로컬 hingeAxis 축 -bendAngle 회전 = world planeNormal 축 -bendAngle (pole 반대쪽으로 굽힘)
     const bendAngle = Math.PI - elbowAngle;
-
-    // 로컬 X축 기준 회전 (팔꿈치는 한 축으로만 회전)
-    const qLowerLocal = new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(0, 1, 0), // VRM에서 팔꿈치 회전축
-        -bendAngle * (boneAxis.x < 0 ? 1 : -1) // 좌우 팔 방향에 따라 부호 조정
-    );
+    const qLowerLocal = new THREE.Quaternion().setFromAxisAngle(hingeAxis, -bendAngle);
 
     lowerBone.quaternion.slerp(qLowerLocal, factor);
 }
@@ -4039,6 +4049,81 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const neutralQuat = new THREE.Quaternion();
         lUpper.quaternion.slerp(relaxQuat, factor * 0.3);
         if (lLower) lLower.quaternion.slerp(neutralQuat, factor * 0.3);
+    }
+
+    // ============================================================
+    // 다리 트래킹 (hip→knee→ankle Two-Bone IK)
+    // 다리 rest 방향은 -Y라 VRM 버전과 무관하게 boneAxis 동일 (Y축은 rotateVRM0 영향 없음)
+    // ============================================================
+    const rUpperLeg = currentVrm.humanoid.getNormalizedBoneNode('rightUpperLeg');
+    const rLowerLeg = currentVrm.humanoid.getNormalizedBoneNode('rightLowerLeg');
+    const rFoot = currentVrm.humanoid.getNormalizedBoneNode('rightFoot');
+
+    const lUpperLeg = currentVrm.humanoid.getNormalizedBoneNode('leftUpperLeg');
+    const lLowerLeg = currentVrm.humanoid.getNormalizedBoneNode('leftLowerLeg');
+    const lFoot = currentVrm.humanoid.getNormalizedBoneNode('leftFoot');
+
+    // 발목 visibility 기준 hysteresis (앉은 자세 등 다리가 안 보이면 곧게 선 자세 유지)
+    const leftAnkleVis = landmarks[27].visibility ?? 1.0;
+    const rightAnkleVis = landmarks[28].visibility ?? 1.0;
+
+    if (!leftLegActive && leftAnkleVis > VIS_THRESHOLD_ON) {
+        leftLegActive = true;
+    } else if (leftLegActive && leftAnkleVis < VIS_THRESHOLD_OFF) {
+        leftLegActive = false;
+    }
+
+    if (!rightLegActive && rightAnkleVis > VIS_THRESHOLD_ON) {
+        rightLegActive = true;
+    } else if (rightLegActive && rightAnkleVis < VIS_THRESHOLD_OFF) {
+        rightLegActive = false;
+    }
+
+    const legBoneAxis = new THREE.Vector3(0, -1, 0);
+    const straightLeg = new THREE.Quaternion();
+
+    // --- Avatar Right Leg ← MediaPipe Left Body(23,25,27) (미러링) ---
+    if (rUpperLeg && rLowerLeg && rFoot && leftLegActive) {
+        const upperLen = rLowerLeg.position.length();
+        const lowerLen = rFoot.position.length();
+
+        const mpHip = getPos(23);
+        const mpKnee = getPos(25);
+        const mpAnkle = getPos(27);
+
+        const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
+        const scale = (upperLen + lowerLen) / mpLegLen;
+
+        const target = new THREE.Vector3().subVectors(mpAnkle, mpHip).multiplyScalar(scale);
+        const pole = new THREE.Vector3().subVectors(mpKnee, mpHip).multiplyScalar(scale);
+
+        solveTwoBoneIK(rUpperLeg, rLowerLeg, upperLen, lowerLen, target, pole, legBoneAxis.clone(), deltaTime, ikPlaneState.rightLeg);
+    } else if (rUpperLeg && !leftLegActive) {
+        // 곧게 선 자세로 복귀
+        rUpperLeg.quaternion.slerp(straightLeg, factor * 0.3);
+        if (rLowerLeg) rLowerLeg.quaternion.slerp(straightLeg, factor * 0.3);
+    }
+
+    // --- Avatar Left Leg ← MediaPipe Right Body(24,26,28) (미러링) ---
+    if (lUpperLeg && lLowerLeg && lFoot && rightLegActive) {
+        const upperLen = lLowerLeg.position.length();
+        const lowerLen = lFoot.position.length();
+
+        const mpHip = getPos(24);
+        const mpKnee = getPos(26);
+        const mpAnkle = getPos(28);
+
+        const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
+        const scale = (upperLen + lowerLen) / mpLegLen;
+
+        const target = new THREE.Vector3().subVectors(mpAnkle, mpHip).multiplyScalar(scale);
+        const pole = new THREE.Vector3().subVectors(mpKnee, mpHip).multiplyScalar(scale);
+
+        solveTwoBoneIK(lUpperLeg, lLowerLeg, upperLen, lowerLen, target, pole, legBoneAxis.clone(), deltaTime, ikPlaneState.leftLeg);
+    } else if (lUpperLeg && !rightLegActive) {
+        // 곧게 선 자세로 복귀
+        lUpperLeg.quaternion.slerp(straightLeg, factor * 0.3);
+        if (lLowerLeg) lLowerLeg.quaternion.slerp(straightLeg, factor * 0.3);
     }
 }
 
