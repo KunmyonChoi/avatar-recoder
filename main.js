@@ -4187,9 +4187,6 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     const parentWorldQuat = getParentWorldQuaternion(upperBone);
     const qUpperLocal = worldToLocalQuaternion(qUpperFinal, parentWorldQuat);
 
-    // 방향은 기존 속도로, 본 축 비틀림은 느리게 수렴 (어깨 스핀 완화)
-    slerpSwingTwist(upperBone, qUpperLocal, boneAxis, factor, getLerpFactor(deltaTime, 3));
-
     // 8. Lower Bone (팔꿈치/무릎) 회전 계산
     // hinge joint: 굽힘 각도 = π - elbowAngle (펴진 상태가 π)
     // qUpperFinal이 로컬 hingeAxis를 world planeNormal에 정렬시켰으므로,
@@ -4197,6 +4194,27 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     const bendAngle = Math.PI - elbowAngle;
     const qLowerLocal = new THREE.Quaternion().setFromAxisAngle(hingeAxis, -bendAngle);
 
+    // 8.5 상완(허벅지) 축 비틀림 제한 + 하위 본 재분배
+    // IK 해는 비틀림을 상위 본 한 곳에 몰아넣어(실측 예: 팔 들었을 때 -121°) 어깨/소매
+    // mesh가 감기고 손목이 ~150° 역보정됨. 비틀림을 ±45°로 제한하고 잔여분을 하위 본
+    // 로컬 회전 앞에 합성 — 상·하위 곱이 보존되어 팔 전체의 world 자세는 그대로,
+    // 감김만 팔을 따라 분산됨. (프리즈 덤프 A/B 비교로 도출: X -120.9° → 수동 -36.3°)
+    {
+        if (qUpperLocal.w < 0) {
+            qUpperLocal.set(-qUpperLocal.x, -qUpperLocal.y, -qUpperLocal.z, -qUpperLocal.w);
+        }
+        const d = qUpperLocal.x * boneAxis.x + qUpperLocal.y * boneAxis.y + qUpperLocal.z * boneAxis.z;
+        const twistAngle = 2 * Math.atan2(d, qUpperLocal.w);
+        const maxTwist = Math.PI / 4;
+        if (Math.abs(twistAngle) > maxTwist) {
+            const excess = twistAngle - Math.sign(twistAngle) * maxTwist;
+            qUpperLocal.multiply(new THREE.Quaternion().setFromAxisAngle(boneAxis, -excess));
+            qLowerLocal.premultiply(new THREE.Quaternion().setFromAxisAngle(boneAxis, excess));
+        }
+    }
+
+    // 방향은 기존 속도로, 본 축 비틀림은 느리게 수렴 (어깨 스핀 완화)
+    slerpSwingTwist(upperBone, qUpperLocal, boneAxis, factor, getLerpFactor(deltaTime, 3));
     lowerBone.quaternion.slerp(qLowerLocal, factor);
 }
 
