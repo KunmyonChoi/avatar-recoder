@@ -3964,12 +3964,18 @@ function updateDebug3D(worldLandmarks) {
     debugGroup.visible = true;
 
     if (worldLandmarks) {
+        // MediaPipe world landmark는 골반 중점이 원점이라 그대로 그리면 스켈레톤이
+        // 월드 원점(발밑)에 몰림 → 아바타 hips 위치로 옮겨 아바타와 겹쳐 비교 가능하게
+        const origin = new THREE.Vector3(0, 1.0, 0);
+        const hips = currentVrm?.humanoid.getNormalizedBoneNode('hips');
+        if (hips) hips.getWorldPosition(origin);
+
         for (let i = 0; i < worldLandmarks.length; i++) {
             const l = worldLandmarks[i];
             const sphere = debugGroup.children[i];
             if (sphere) {
                 const pos = mpToVRM(l);
-                sphere.position.copy(pos);
+                sphere.position.copy(pos).add(origin);
             }
         }
     }
