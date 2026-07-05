@@ -1955,9 +1955,11 @@ async function init() {
                 updateView();
             } else if (action === 'landmarks-on') {
                 DEBUG_MODE = true;
+                setBoneAxesVisible(true);
                 updateDevOptions();
             } else if (action === 'landmarks-off') {
                 DEBUG_MODE = false;
+                setBoneAxesVisible(false);
                 updateDevOptions();
                 if (debugCtx) {
                     debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
@@ -3658,6 +3660,9 @@ async function loadAvatar(url = './avatar.vrm') {
         const hipsBone = vrm.humanoid.getNormalizedBoneNode('hips');
         if (hipsBone) vrm.scene.userData.hipsRestPos = hipsBone.position.clone();
 
+        // 디버그용 본 방향 축 (Landmarks 토글로 표시)
+        setupBoneAxesHelpers(vrm);
+
         // 발 고정(pinning)용 rest 위치 — vrm.scene 로컬 기준이라 앵커로 scene을 옮겨도 유효
         vrm.scene.updateWorldMatrix(true, true);
         for (const side of ['left', 'right']) {
@@ -3905,6 +3910,37 @@ function resetPose(deltaTime) {
     hipSwayBaseline = null;
     leanBaseline = null;
     danceMode = false;
+}
+
+// --- 본 방향 디버그 축 (Landmarks ON일 때 표시) ---
+// 각 normalized bone의 로컬 축을 그림: X=빨강, Y=초록, Z=파랑
+// VRM rest 기준 해석: 손바닥 = -Y(초록 반대쪽), 팔/손가락 방향 = ±X(빨강), 전방 = +Z(파랑)
+let boneAxesHelpers = [];
+const AXES_DEBUG_BONES = [
+    ['hips', 0.12], ['chest', 0.12], ['head', 0.1],
+    ['leftShoulder', 0.06], ['rightShoulder', 0.06],
+    ['leftUpperArm', 0.08], ['leftLowerArm', 0.08], ['leftHand', 0.09],
+    ['rightUpperArm', 0.08], ['rightLowerArm', 0.08], ['rightHand', 0.09],
+    ['leftUpperLeg', 0.08], ['leftLowerLeg', 0.08], ['leftFoot', 0.08],
+    ['rightUpperLeg', 0.08], ['rightLowerLeg', 0.08], ['rightFoot', 0.08],
+];
+
+function setupBoneAxesHelpers(vrm) {
+    boneAxesHelpers = []; // 이전 아바타의 헬퍼는 scene dispose와 함께 제거됨
+    for (const [name, size] of AXES_DEBUG_BONES) {
+        const bone = vrm.humanoid.getNormalizedBoneNode(name);
+        if (!bone) continue;
+        const helper = new THREE.AxesHelper(size);
+        helper.material.depthTest = false; // 메쉬 안쪽 본도 항상 보이도록
+        helper.renderOrder = 999;
+        helper.visible = DEBUG_MODE;
+        bone.add(helper);
+        boneAxesHelpers.push(helper);
+    }
+}
+
+function setBoneAxesVisible(visible) {
+    for (const h of boneAxesHelpers) h.visible = visible;
 }
 
 // --- Debug 3D ---
