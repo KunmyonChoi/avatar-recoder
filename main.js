@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { VRMLoaderPlugin, VRMUtils, VRMExpressionPresetName } from '@pixiv/three-vrm';
 import { FilesetResolver, FaceLandmarker, PoseLandmarker, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
 
@@ -3715,7 +3716,8 @@ function animate() {
         // (detectForVideo가 프레임당 수십 ms 블로킹 → pointermove 유실로 선이 끊기는 문제 완화)
         const throttleDetection = activeStroke && (currentTime - lastDetectionTime) < 150;
 
-        if (video.currentTime !== lastVideoTime && !throttleDetection) {
+        // poseFrozen: 디버그 프리즈 중에는 트래킹 적용을 멈추고 수동 본 편집 상태 유지
+        if (video.currentTime !== lastVideoTime && !throttleDetection && !poseFrozen) {
             lastVideoTime = video.currentTime;
             lastDetectionTime = currentTime;
 
@@ -3948,6 +3950,100 @@ function setupBoneAxesHelpers(vrm) {
 function setBoneAxesVisible(visible) {
     for (const h of boneAxesHelpers) h.visible = visible;
 }
+
+// --- 포즈 프리즈 & 본 수동 편집 (디버깅용) ---
+// Landmarks ON 상태에서 키보드로 조작:
+//   F  : 포즈 프리즈 토글 (트래킹 적용 중지, 렌더링은 유지)
+//   B  : 편집할 본 순환 선택 (Shift+B 역방향) → TransformControls 기즈모로 회전
+//   Esc: 본 선택 해제
+//   P  : 현재 본 상태 덤프 (콘솔 + 클립보드) — 트래킹 결과/수동 개선치를
+//        JSON으로 뽑아 비교·분석에 활용하는 재귀 보정 워크플로우용
+let poseFrozen = false;
+let boneEditControls = null;
+let boneEditIndex = -1;
+
+function ensureBoneEditControls() {
+    if (boneEditControls || !camera || !renderer) return boneEditControls;
+    boneEditControls = new TransformControls(camera, renderer.domElement);
+    boneEditControls.setMode('rotate');
+    boneEditControls.setSpace('local');
+    boneEditControls.setSize(0.6);
+    boneEditControls.addEventListener('dragging-changed', (e) => {
+        if (orbitControls) orbitControls.enabled = !e.value && isOrbitEnabled;
+    });
+    // three r169+: TransformControls는 Object3D가 아니므로 getHelper()를 scene에 추가
+    const gizmo = boneEditControls.getHelper ? boneEditControls.getHelper() : boneEditControls;
+    scene.add(gizmo);
+    return boneEditControls;
+}
+
+function selectDebugBone(step) {
+    if (!currentVrm) return;
+    const controls = ensureBoneEditControls();
+    if (!controls) return;
+    const names = AXES_DEBUG_BONES.map(([n]) => n)
+        .filter(n => currentVrm.humanoid.getNormalizedBoneNode(n));
+    if (names.length === 0) return;
+    boneEditIndex = (boneEditIndex + step + names.length) % names.length;
+    const name = names[boneEditIndex];
+    controls.attach(currentVrm.humanoid.getNormalizedBoneNode(name));
+    console.log(`[debug] 본 선택: ${name} (B: 다음, Shift+B: 이전, Esc: 해제, 기즈모 드래그로 회전)`);
+}
+
+function deselectDebugBone() {
+    if (boneEditControls) boneEditControls.detach();
+    boneEditIndex = -1;
+}
+
+function dumpPoseDebug() {
+    if (!currentVrm) return;
+    const bones = {};
+    for (const [name] of AXES_DEBUG_BONES) {
+        const bone = currentVrm.humanoid.getNormalizedBoneNode(name);
+        if (!bone) continue;
+        const q = bone.quaternion;
+        const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+        bones[name] = {
+            quat: [q.x, q.y, q.z, q.w].map(v => +v.toFixed(4)),
+            eulerDeg: [e.x, e.y, e.z].map(v => +THREE.MathUtils.radToDeg(v).toFixed(1))
+        };
+    }
+    const hips = currentVrm.humanoid.getNormalizedBoneNode('hips');
+    const dump = {
+        frozen: poseFrozen,
+        model: currentAvatarUrl,
+        vrmVersion: currentVrm.meta?.metaVersion ?? '1',
+        states: { leftArmActive, rightArmActive, danceMode },
+        hipsPos: hips ? [hips.position.x, hips.position.y, hips.position.z].map(v => +v.toFixed(4)) : null,
+        bones
+    };
+    const text = JSON.stringify(dump, null, 2);
+    console.log('[debug] pose dump:\n' + text);
+    navigator.clipboard?.writeText(text).then(
+        () => console.log('[debug] 클립보드에 복사됨 — 그대로 붙여넣어 분석에 사용'),
+        () => {}
+    );
+}
+
+document.addEventListener('keydown', (e) => {
+    if (!DEBUG_MODE) return;
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+
+    if (e.key === 'f' || e.key === 'F') {
+        poseFrozen = !poseFrozen;
+        console.log(`[debug] 포즈 프리즈: ${poseFrozen ? 'ON — B로 본 선택, P로 덤프' : 'OFF'}`);
+        if (!poseFrozen) deselectDebugBone();
+    } else if (e.key === 'p' || e.key === 'P') {
+        dumpPoseDebug();
+    } else if (e.key === 'b') {
+        selectDebugBone(1);
+    } else if (e.key === 'B') {
+        selectDebugBone(-1);
+    } else if (e.key === 'Escape') {
+        deselectDebugBone();
+    }
+});
 
 // --- Debug 3D ---
 let debugGroup;
