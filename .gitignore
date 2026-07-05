@@ -36,3 +36,6 @@ dist-ssr
 # Recordings (if saved locally)
 *.webm
 *.mp4
+
+# Local test avatar models (large binaries)
+avatars/
