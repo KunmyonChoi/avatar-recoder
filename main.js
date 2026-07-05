@@ -3882,12 +3882,6 @@ function resetPose(deltaTime) {
     if (rightLowerArm) rightLowerArm.quaternion.slerp(neutralLower, factor);
     if (leftLowerArm) leftLowerArm.quaternion.slerp(neutralLower, factor);
 
-    // 어깨(쇄골) 복귀
-    for (const boneName of ['rightShoulder', 'leftShoulder']) {
-        const bone = currentVrm.humanoid.getNormalizedBoneNode(boneName);
-        if (bone) bone.quaternion.slerp(neutralLower, factor);
-    }
-
     // 다리는 곧게 선 자세(rest)로 복귀
     for (const boneName of ['rightUpperLeg', 'rightLowerLeg', 'leftUpperLeg', 'leftLowerLeg']) {
         const bone = currentVrm.humanoid.getNormalizedBoneNode(boneName);
@@ -4116,31 +4110,6 @@ function slerpSwingTwist(bone, qTarget, axis, swingFactor, twistFactor) {
     bone.quaternion.copy(qCur).multiply(partialSwing).multiply(partialTwist);
 }
 
-// 어깨(쇄골) 본이 팔 스윙의 일부를 분담 — 팔을 높이 들 때 어깨가 자연스럽게 따라
-// 올라가, upperArm 한 관절에 회전이 몰려 어깨 mesh가 접히는 것을 완화.
-// 어깨 적용 후 IK가 (어깨 회전이 반영된 parent 기준으로) 다시 풀리므로 팔 끝 방향은 유지됨.
-const SHOULDER_SWING_SHARE = 0.25;      // 전체 스윙 중 어깨 분담 비율
-const SHOULDER_MAX_ANGLE = Math.PI / 7; // 어깨 최대 회전 (~26도)
-
-function applyShoulderAssist(shoulderBone, targetDir, boneAxis, factor) {
-    if (!shoulderBone) return;
-
-    const dir = targetDir.clone();
-    if (dir.lengthSq() < 1e-8) return;
-    dir.normalize();
-
-    const qFull = new THREE.Quaternion().setFromUnitVectors(boneAxis, dir);
-    const fullAngle = 2 * Math.acos(THREE.MathUtils.clamp(Math.abs(qFull.w), 0, 1));
-    if (fullAngle < 1e-4) return;
-
-    const shareAngle = Math.min(fullAngle * SHOULDER_SWING_SHARE, SHOULDER_MAX_ANGLE);
-    const qPartial = new THREE.Quaternion().slerp(qFull, shareAngle / fullAngle);
-
-    const parentWorldQuat = getParentWorldQuaternion(shoulderBone);
-    const qLocal = worldToLocalQuaternion(qPartial, parentWorldQuat);
-    shoulderBone.quaternion.slerp(qLocal, factor * 0.5);
-}
-
 // boneAxis는 rig 로컬(로드 시점 프레임) 기준 rest 방향.
 // localForwardZ: rig 로컬 전방의 Z 부호 — VRM1은 +1, VRM0은 rig가 rotateVRM0 이전
 // 프레임(모델이 -Z를 향하던 시점) 기준이라 -1. hinge 축 계산에 사용되며,
@@ -4249,12 +4218,10 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     const rUpper = currentVrm.humanoid.getNormalizedBoneNode('rightUpperArm');
     const rLower = currentVrm.humanoid.getNormalizedBoneNode('rightLowerArm');
     const rHand = currentVrm.humanoid.getNormalizedBoneNode('rightHand');
-    const rShoulderBone = currentVrm.humanoid.getNormalizedBoneNode('rightShoulder');
 
     const lUpper = currentVrm.humanoid.getNormalizedBoneNode('leftUpperArm');
     const lLower = currentVrm.humanoid.getNormalizedBoneNode('leftLowerArm');
     const lHand = currentVrm.humanoid.getNormalizedBoneNode('leftHand');
-    const lShoulderBone = currentVrm.humanoid.getNormalizedBoneNode('leftShoulder');
 
     // --- Hips 회전 (골반 롤/요) ---
     // 회전 부호는 spine과 동일한 규약: Y축 회전은 rotateVRM0(180°Y)에 불변이라 yaw는 버전 공통,
@@ -4382,8 +4349,6 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        // 어깨가 스윙 일부를 먼저 분담한 뒤, IK가 어깨 회전이 반영된 상태로 풀림
-        applyShoulderAssist(rShoulderBone, target, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), factor);
         solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime, ikPlaneState.right, isVRM0 ? -1 : 1);
     } else if (rUpper && !leftArmActive) {
         // 팔 내리기 — 방향은 부드럽게, 비틀림은 더 느리게 (복귀 시 어깨 스핀 완화)
@@ -4391,7 +4356,6 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const neutralQuat = new THREE.Quaternion();
         slerpSwingTwist(rUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (rLower) rLower.quaternion.slerp(neutralQuat, factor * 0.3);
-        if (rShoulderBone) rShoulderBone.quaternion.slerp(neutralQuat, factor * 0.3);
     }
 
     // --- Avatar Left Arm ← MediaPipe Right Body(12,14,16) + Hand(0) ---
@@ -4412,8 +4376,6 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        // 어깨가 스윙 일부를 먼저 분담한 뒤, IK가 어깨 회전이 반영된 상태로 풀림
-        applyShoulderAssist(lShoulderBone, target, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), factor);
         solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime, ikPlaneState.left, isVRM0 ? -1 : 1);
     } else if (lUpper && !rightArmActive) {
         // 팔 내리기 — 방향은 부드럽게, 비틀림은 더 느리게 (복귀 시 어깨 스핀 완화)
@@ -4421,7 +4383,6 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const neutralQuat = new THREE.Quaternion();
         slerpSwingTwist(lUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (lLower) lLower.quaternion.slerp(neutralQuat, factor * 0.3);
-        if (lShoulderBone) lShoulderBone.quaternion.slerp(neutralQuat, factor * 0.3);
     }
 
     // ============================================================
