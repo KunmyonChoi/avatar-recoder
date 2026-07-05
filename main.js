@@ -3599,6 +3599,10 @@ async function loadAvatar(url = './avatar.vrm') {
         scene.add(vrm.scene);
         currentVrm = vrm;
         currentAvatarUrl = url;
+
+        // Hips rest 높이 저장 (로드 직후 = rest 자세 보장, hips 상하 이동의 기준점)
+        const hipsBone = vrm.humanoid.getNormalizedBoneNode('hips');
+        if (hipsBone) vrm.scene.userData.hipsRestY = hipsBone.position.y;
         console.log("Avatar loaded:", url);
     } catch (err) {
         console.error("VRM load error:", err);
@@ -3806,8 +3810,9 @@ function resetPose(deltaTime) {
     const hips = currentVrm.humanoid.getNormalizedBoneNode('hips');
     if (hips) {
         hips.quaternion.slerp(neutralLower, factor);
-        if (currentVrm.userData.hipsRestY !== undefined) {
-            hips.position.y = THREE.MathUtils.lerp(hips.position.y, currentVrm.userData.hipsRestY, factor);
+        const restY = currentVrm.scene.userData.hipsRestY;
+        if (restY !== undefined) {
+            hips.position.y = THREE.MathUtils.lerp(hips.position.y, restY, factor);
         }
     }
 
@@ -4162,11 +4167,8 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     // World landmark는 hip 원점 기준이라 절대 위치가 없으므로,
     // 다리의 수직 신장 비율(hip-ankle 높이차 / 다리 길이)로 hips 하강량을 역산
     // ============================================================
-    if (hips) {
-        if (currentVrm.userData.hipsRestY === undefined) {
-            currentVrm.userData.hipsRestY = hips.position.y;
-        }
-        const restY = currentVrm.userData.hipsRestY;
+    if (hips && currentVrm.scene.userData.hipsRestY !== undefined) {
+        const restY = currentVrm.scene.userData.hipsRestY;
         let targetY = restY;
 
         // 활성 다리별 하강량 계산 후 최솟값 사용 (한쪽 다리가 곧게 서 있으면 hips 유지)
