@@ -127,6 +127,7 @@ let currentAvatarUrl = './avatar.vrm';
 let isAvatarLoading = false;
 let lastVideoTime = -1;
 let lastFrameTime = performance.now();
+let lastDetectionTime = 0;           // 드로잉 중 인식 스로틀링 기준 시각
 let blendShapes = [];
 let rotation = new THREE.Euler();
 let currentGesture = 'neutral';
@@ -1062,9 +1063,19 @@ function renderStroke(ctx, stroke, nx, ny) {
             ctx.lineWidth = lw * (nx / stableWindowWidth);
         }
         ctx.beginPath();
-        ctx.moveTo(stroke.points[0].x * nx, stroke.points[0].y * ny);
-        for (let i = 1; i < stroke.points.length; i++) {
-            ctx.lineTo(stroke.points[i].x * nx, stroke.points[i].y * ny);
+        const pts = stroke.points;
+        ctx.moveTo(pts[0].x * nx, pts[0].y * ny);
+        if (pts.length === 2) {
+            ctx.lineTo(pts[1].x * nx, pts[1].y * ny);
+        } else {
+            // 중간점 quadratic 곡선 연결: 샘플이 성겨도(스레드 블로킹 등) 각지지 않게
+            for (let i = 1; i < pts.length - 1; i++) {
+                const mx = (pts[i].x + pts[i + 1].x) / 2 * nx;
+                const my = (pts[i].y + pts[i + 1].y) / 2 * ny;
+                ctx.quadraticCurveTo(pts[i].x * nx, pts[i].y * ny, mx, my);
+            }
+            const last = pts[pts.length - 1];
+            ctx.lineTo(last.x * nx, last.y * ny);
         }
         ctx.stroke();
 
@@ -1523,25 +1534,33 @@ function onDrawPointerUpGlobal(e) {
 
 function onDrawPointerMove(e) {
     if (!activeStroke) return;
+
+    const rect = drawingCanvasEl.getBoundingClientRect();
+    // 메인 스레드가 인식 연산으로 바쁠 때 브라우저가 병합해 버린 중간 샘플까지 복원 (선 끊김 완화)
+    const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    const samples = coalesced.length > 0 ? coalesced : [e];
+
     if (activeStroke.type === 'eraser') {
-        const rect = drawingCanvasEl.getBoundingClientRect();
-        const nx = (e.clientX - rect.left) / rect.width;
-        const ny = (e.clientY - rect.top)  / rect.height;
-        eraseAt(nx, ny, drawCurrentSize);
-        activeStroke.x = nx;
-        activeStroke.y = ny;
+        for (const ev of samples) {
+            const nx = (ev.clientX - rect.left) / rect.width;
+            const ny = (ev.clientY - rect.top)  / rect.height;
+            eraseAt(nx, ny, drawCurrentSize);
+            activeStroke.x = nx;
+            activeStroke.y = ny;
+        }
         return;
     }
 
-    const rect = drawingCanvasEl.getBoundingClientRect();
-    const nx = (e.clientX - rect.left) / rect.width;
-    const ny = (e.clientY - rect.top)  / rect.height;
-
     if (activeStroke.type === 'pen' || activeStroke.type === 'highlighter') {
-        activeStroke.points.push({ x: nx, y: ny });
+        for (const ev of samples) {
+            activeStroke.points.push({
+                x: (ev.clientX - rect.left) / rect.width,
+                y: (ev.clientY - rect.top)  / rect.height
+            });
+        }
     } else if (activeStroke.type === 'arrow') {
-        activeStroke.x2 = nx;
-        activeStroke.y2 = ny;
+        activeStroke.x2 = (e.clientX - rect.left) / rect.width;
+        activeStroke.y2 = (e.clientY - rect.top)  / rect.height;
     }
 }
 
@@ -3654,8 +3673,13 @@ function animate() {
             debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
         }
 
-        if (video.currentTime !== lastVideoTime) {
+        // 펜 획을 긋는 동안은 인식을 ~150ms 주기로 낮춰 메인 스레드를 입력 처리에 양보
+        // (detectForVideo가 프레임당 수십 ms 블로킹 → pointermove 유실로 선이 끊기는 문제 완화)
+        const throttleDetection = activeStroke && (currentTime - lastDetectionTime) < 150;
+
+        if (video.currentTime !== lastVideoTime && !throttleDetection) {
             lastVideoTime = video.currentTime;
+            lastDetectionTime = currentTime;
 
             // 1. Detect Face
             if (faceLandmarker) {
