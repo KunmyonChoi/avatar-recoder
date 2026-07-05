@@ -3920,6 +3920,10 @@ function resetPose(deltaTime) {
     hipSwayBaseline = null;
     leanBaseline = null;
     danceMode = false;
+    for (const key of ['right', 'left', 'rightLeg', 'leftLeg']) {
+        ikPlaneState[key].twistFlip = false;
+        ikPlaneState[key].pronation = 0;
+    }
 }
 
 // --- 본 방향 디버그 축 (Landmarks ON일 때 표시) ---
@@ -4165,10 +4169,10 @@ function updateDebug3D(worldLandmarks) {
 // ============================================================
 // 팔다리가 거의 일직선일 때 planeNormal이 노이즈로 요동치는 것을 막기 위한 체인별 상태
 const ikPlaneState = {
-    right: { normal: null, twistFlip: false },
-    left: { normal: null, twistFlip: false },
-    rightLeg: { normal: null, twistFlip: false },
-    leftLeg: { normal: null, twistFlip: false }
+    right: { normal: null, twistFlip: false, pronation: 0 },
+    left: { normal: null, twistFlip: false, pronation: 0 },
+    rightLeg: { normal: null, twistFlip: false, pronation: 0 },
+    leftLeg: { normal: null, twistFlip: false, pronation: 0 }
 };
 
 // 본 회전을 swing(방향)과 twist(본 축 비틀림)로 분해해 서로 다른 속도로 수렴시킴.
@@ -4296,6 +4300,14 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
             const qPi = new THREE.Quaternion().setFromAxisAngle(boneAxis, Math.PI);
             qUpperLocal.multiply(qPi);
             qLowerLocal.premultiply(qPi); // 180° 회전은 자기 역원 — 곱 보존
+        }
+
+        // 8.6 전완 회내(pronation) 적용 — 손목 비틀림 초과분을 전완 자체 롤로 이관
+        // (applyHandOrientation의 서보가 갱신). postmultiply는 전완 방향은 유지하면서
+        // 롤만 바꾸므로 트래킹 정확도에 영향 없음. 팔꿈치 경계의 가지 보정 덩어리도
+        // 이 롤이 상쇄해 체인 전체에 비틀림이 분산됨.
+        if (planeState.pronation) {
+            qLowerLocal.multiply(new THREE.Quaternion().setFromAxisAngle(boneAxis, planeState.pronation));
         }
     }
 
@@ -4464,6 +4476,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         slerpSwingTwist(rUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (rLower) rLower.quaternion.slerp(neutralQuat, factor * 0.3);
         ikPlaneState.right.twistFlip = false;
+        ikPlaneState.right.pronation = THREE.MathUtils.lerp(ikPlaneState.right.pronation, 0, factor * 0.3);
     }
 
     // --- Avatar Left Arm ← MediaPipe Right Body(12,14,16) + Hand(0) ---
@@ -4492,6 +4505,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         slerpSwingTwist(lUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (lLower) lLower.quaternion.slerp(neutralQuat, factor * 0.3);
         ikPlaneState.left.twistFlip = false;
+        ikPlaneState.left.pronation = THREE.MathUtils.lerp(ikPlaneState.left.pronation, 0, factor * 0.3);
     }
 
     // ============================================================
@@ -4628,7 +4642,7 @@ function applyHands(landmarksArray, handednesses, deltaTime) {
 
         if (armActive) {
             // 손 랜드마크 기반 실제 손목 방향 적용
-            applyHandOrientation(prefix, landmarks, factor);
+            applyHandOrientation(prefix, landmarks, factor, deltaTime);
         } else {
             // 내려간 팔에 맞지 않는 손목 회전이 남지 않도록 rest로 복귀
             const handBone = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'Hand');
@@ -4653,7 +4667,8 @@ function handLmToVRM(lm) {
 }
 
 // 손 랜드마크로부터 실제 손목 방향(손가락 방향 + 손바닥 법선)을 계산해 Hand bone에 적용
-function applyHandOrientation(prefix, landmarks, factor) {
+// deltaTime이 주어지면 손목 비틀림 초과분을 전완 회내 서보로 이관
+function applyHandOrientation(prefix, landmarks, factor, deltaTime) {
     if (!currentVrm) return;
 
     const handBone = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'Hand');
@@ -4696,6 +4711,20 @@ function applyHandOrientation(prefix, landmarks, factor) {
     const parentWorldQuat = getParentWorldQuaternion(handBone);
     const qLocal = worldToLocalQuaternion(qAim, parentWorldQuat);
     handBone.quaternion.slerp(qLocal, factor * 0.5);
+
+    // 손목 비틀림 서보: 손목 로컬 twist가 ±60°를 넘는 초과분을 전완 회내(pronation)
+    // 상태로 이관 (다음 프레임 IK가 전완 롤로 적용 → 손목 twist가 그만큼 감소).
+    // 실측(모션 레코딩): 손목이 최대 ~180°를 홀로 감당 → 팔꿈치·손목 경계 감김의 원인
+    const state = ikPlaneState[prefix];
+    if (state && deltaTime !== undefined) {
+        const qs = qLocal.clone();
+        if (qs.w < 0) qs.set(-qs.x, -qs.y, -qs.z, -qs.w);
+        const wristTwist = 2 * Math.atan2(qs.x, qs.w); // hand 본 축(±X) 기준 twist
+        const limit = Math.PI / 3; // 손목 허용 비틀림 ±60°
+        const overflow = wristTwist - THREE.MathUtils.clamp(wristTwist, -limit, limit);
+        const target = THREE.MathUtils.clamp(state.pronation + overflow, -2.1, 2.1);
+        state.pronation += (target - state.pronation) * getLerpFactor(deltaTime, 4);
+    }
 }
 
 // 손이 화면에서 사라졌을 때 손목/손가락을 rest 자세로 복귀
