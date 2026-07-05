@@ -3950,6 +3950,28 @@ const ikPlaneState = {
     leftLeg: { normal: null }
 };
 
+// 본 회전을 swing(방향)과 twist(본 축 비틀림)로 분해해 서로 다른 속도로 수렴시킴.
+// relax 자세와 IK 해의 twist 규약이 달라(≈180°) 팔을 들고 내릴 때 어깨가 홱 도는
+// 현상을 완화 — 방향은 즉시 따라가고 비틀림은 천천히 따라잡음.
+function slerpSwingTwist(bone, qTarget, axis, swingFactor, twistFactor) {
+    const qCur = bone.quaternion;
+    const delta = qCur.clone().invert().multiply(qTarget); // 로컬 프레임 잔여 회전
+
+    // delta = swing ∘ twist 분해 (twist: axis 성분 사영)
+    const d = delta.x * axis.x + delta.y * axis.y + delta.z * axis.z;
+    const twist = new THREE.Quaternion(axis.x * d, axis.y * d, axis.z * d, delta.w);
+    if (twist.lengthSq() < 1e-10) {
+        twist.set(0, 0, 0, 1);
+    } else {
+        twist.normalize();
+    }
+    const swing = delta.clone().multiply(twist.clone().invert());
+
+    const partialSwing = new THREE.Quaternion().slerp(swing, swingFactor);
+    const partialTwist = new THREE.Quaternion().slerp(twist, twistFactor);
+    bone.quaternion.copy(qCur).multiply(partialSwing).multiply(partialTwist);
+}
+
 // boneAxis는 rig 로컬(로드 시점 프레임) 기준 rest 방향.
 // localForwardZ: rig 로컬 전방의 Z 부호 — VRM1은 +1, VRM0은 rig가 rotateVRM0 이전
 // 프레임(모델이 -Z를 향하던 시점) 기준이라 -1. hinge 축 계산에 사용되며,
@@ -3991,9 +4013,9 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     // 평면 법선 계산
     let planeNormal = new THREE.Vector3().crossVectors(dirToTarget, dirToPole);
 
-    // 팔이 거의 일직선이면(sin < ~0.1) 측정된 pole이 노이즈에 지배되므로
+    // 팔이 거의 일직선이면(sin < ~0.2) 측정된 pole이 노이즈에 지배되므로
     // 마지막 유효 normal을 유지해 팔 떨림/뒤집힘을 방지
-    if (planeNormal.lengthSq() < 0.01) {
+    if (planeNormal.lengthSq() < 0.04) {
         if (planeState && planeState.normal) {
             planeNormal.copy(planeState.normal);
         } else {
@@ -4026,7 +4048,8 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     const parentWorldQuat = getParentWorldQuaternion(upperBone);
     const qUpperLocal = worldToLocalQuaternion(qUpperFinal, parentWorldQuat);
 
-    upperBone.quaternion.slerp(qUpperLocal, factor);
+    // 방향은 기존 속도로, 본 축 비틀림은 느리게 수렴 (어깨 스핀 완화)
+    slerpSwingTwist(upperBone, qUpperLocal, boneAxis, factor, getLerpFactor(deltaTime, 3));
 
     // 8. Lower Bone (팔꿈치/무릎) 회전 계산
     // hinge joint: 굽힘 각도 = π - elbowAngle (펴진 상태가 π)
@@ -4190,10 +4213,10 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
 
         solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime, ikPlaneState.right, isVRM0 ? -1 : 1);
     } else if (rUpper && !leftArmActive) {
-        // 팔 내리기
+        // 팔 내리기 — 방향은 부드럽게, 비틀림은 더 느리게 (복귀 시 어깨 스핀 완화)
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
         const neutralQuat = new THREE.Quaternion();
-        rUpper.quaternion.slerp(relaxQuat, factor * 0.3);
+        slerpSwingTwist(rUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (rLower) rLower.quaternion.slerp(neutralQuat, factor * 0.3);
     }
 
@@ -4217,10 +4240,10 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
 
         solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime, ikPlaneState.left, isVRM0 ? -1 : 1);
     } else if (lUpper && !rightArmActive) {
-        // 팔 내리기
+        // 팔 내리기 — 방향은 부드럽게, 비틀림은 더 느리게 (복귀 시 어깨 스핀 완화)
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
         const neutralQuat = new THREE.Quaternion();
-        lUpper.quaternion.slerp(relaxQuat, factor * 0.3);
+        slerpSwingTwist(lUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (lLower) lLower.quaternion.slerp(neutralQuat, factor * 0.3);
     }
 
