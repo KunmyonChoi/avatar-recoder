@@ -12,11 +12,16 @@ const isAndroid = /Android/i.test(navigator.userAgent);
 // --- Configuration (모바일에서는 저해상도) ---
 const VIDEO_WIDTH = isMobile ? 640 : 1280;
 const VIDEO_HEIGHT = isMobile ? 480 : 720;
+// 이미지 정규화 좌표의 x/y 스케일 차이 보정용 (x는 너비, y는 높이 기준 정규화)
+const VIDEO_ASPECT = VIDEO_WIDTH / VIDEO_HEIGHT;
 
 // --- Improved Configuration ---
 const LERP_SPEED = 12; // 반응 속도 (높을수록 빠름)
 const VIS_THRESHOLD_ON = 0.65;  // 활성화 임계값
 const VIS_THRESHOLD_OFF = 0.45; // 비활성화 임계값 (hysteresis)
+const DANCE_VIS_ON = 0.6;       // 골반 visibility 댄스 모드 진입 임계값
+const DANCE_VIS_OFF = 0.4;      // 댄스 모드 해제 임계값 (hysteresis)
+const BASELINE_ADAPT_SPEED = 0.1; // sway/lean baseline 적응 속도 (τ≈10s)
 
 // --- One Euro Filter (떨림 완화) ---
 class OneEuroFilter {
@@ -3703,8 +3708,9 @@ function animate() {
                 detectedHands.left = null;
                 detectedHands.right = null;
 
+                let handResults = null;
                 if (handLandmarker) {
-                    const handResults = handLandmarker.detectForVideo(video, currentTime);
+                    handResults = handLandmarker.detectForVideo(video, currentTime);
                     if (handResults.landmarks && handResults.landmarks.length > 0) {
                         // 아바타 기준 좌우로 저장 — tasks-vision 라벨은 해부학적 기준이라
                         // 미러 모드에서 사용자 왼손("Left")이 아바타 오른손이 됨
@@ -3719,9 +3725,6 @@ function animate() {
                             }
                         }
 
-                        // 손가락 처리
-                        applyHands(handResults.landmarks, handResults.handednesses, deltaTime);
-
                         if (DEBUG_MODE && drawingUtils) {
                             for (const landmark of handResults.landmarks) {
                                 drawingUtils.drawConnectors(landmark, HandLandmarker.HAND_CONNECTIONS, { color: "#FF0000", lineWidth: 2 });
@@ -3729,10 +3732,6 @@ function animate() {
                             }
                         }
                     }
-
-                    // 이번 프레임에 검출되지 않은 손은 rest 자세로 복귀
-                    if (!detectedHands.left) relaxHand('left', deltaTime);
-                    if (!detectedHands.right) relaxHand('right', deltaTime);
                 }
 
                 // Pose tracking
@@ -3760,6 +3759,18 @@ function animate() {
 
                 if (!poseDetected) {
                     resetPose(deltaTime);
+                }
+
+                // 손 처리는 pose 이후 실행 — 손목 회전 게이팅(armActive)이
+                // 이전 프레임이 아닌 현재 프레임의 팔 활성 상태를 사용하도록
+                if (handLandmarker) {
+                    if (handResults && handResults.landmarks && handResults.landmarks.length > 0) {
+                        applyHands(handResults.landmarks, handResults.handednesses, deltaTime);
+                    }
+
+                    // 이번 프레임에 검출되지 않은 손은 rest 자세로 복귀
+                    if (!detectedHands.left) relaxHand('left', deltaTime);
+                    if (!detectedHands.right) relaxHand('right', deltaTime);
                 }
             } else {
                 // Body tracking 비활성화 시 팔을 자연스럽게 내림
@@ -3853,6 +3864,11 @@ function resetPose(deltaTime) {
     // Chest도 중립 복귀 (댄스 모드에서 어깨 라인 회전을 받던 본)
     const chest = currentVrm.humanoid.getNormalizedBoneNode('chest');
     if (chest) chest.quaternion.slerp(neutralLower, factor);
+
+    // 손목/손가락도 rest로 복귀 — body tracking OFF 시 applyHands/relaxHand가
+    // 실행되지 않아 마지막 포즈(주먹 등)로 고착되는 것 방지
+    relaxHand('left', deltaTime);
+    relaxHand('right', deltaTime);
 
     // 활성 상태 리셋
     leftArmActive = false;
@@ -4026,9 +4042,9 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
 
         // 댄스 모드: 골반이 안정적으로 보이면 골반/어깨 2-포인트 모델 활성 (hysteresis)
         const wasDanceMode = danceMode;
-        if (!danceMode && hipVis > 0.6) {
+        if (!danceMode && hipVis > DANCE_VIS_ON) {
             danceMode = true;
-        } else if (danceMode && hipVis < 0.4) {
+        } else if (danceMode && hipVis < DANCE_VIS_OFF) {
             danceMode = false;
         }
         if (wasDanceMode !== danceMode) {
@@ -4069,14 +4085,14 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
 
         if (danceMode) {
             // 골반→어깨 벡터의 좌우 기울기 각 (이미지 단위, aspect 보정)
-            const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+            const aspect = VIDEO_ASPECT;
             const vX = ((mpLeft.x + mpRight.x) / 2 - (landmarks[23].x + landmarks[24].x) / 2) * aspect;
             const uY = (landmarks[23].y + landmarks[24].y) / 2 - (mpLeft.y + mpRight.y) / 2; // 이미지 y는 아래+ → 어깨가 위면 양수
             const leanAngle = Math.atan2(vX, Math.max(uY, 1e-4));
 
-            // 중립 기울기 baseline (카메라 기울기·개인 자세 흡수, τ≈10s)
+            // 중립 기울기 baseline (카메라 기울기·개인 자세 흡수)
             if (leanBaseline === null) leanBaseline = leanAngle;
-            const alphaL = 1 - Math.exp(-deltaTime / 10);
+            const alphaL = getLerpFactor(deltaTime, BASELINE_ADAPT_SPEED);
             leanBaseline += (leanAngle - leanBaseline) * alphaL;
 
             // 미러링(-x)과 Rz(+θ가 상단을 -X로 기울임)의 부호가 상쇄되어 이미지 각도를 그대로 사용
@@ -4106,8 +4122,6 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
 
     const leftWristVis = landmarks[15].visibility ?? 1.0;
     const rightWristVis = landmarks[16].visibility ?? 1.0;
-    const leftWristY = landmarks[15].y;
-    const rightWristY = landmarks[16].y;
 
     // Hysteresis: 켜질 때는 높은 임계값, 꺼질 때는 낮은 임계값
     if (!leftArmActive && leftWristVis > VIS_THRESHOLD_ON) {
@@ -4186,7 +4200,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     const hipsRestPos = currentVrm.scene.userData.hipsRestPos;
     if (hips && hipsRestPos && landmarks) {
         const shoulderVis = Math.min(landmarks[11].visibility ?? 1.0, landmarks[12].visibility ?? 1.0);
-        const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+        const aspect = VIDEO_ASPECT;
 
         // 기준점 선택 (이미지 단위, x는 aspect 보정으로 y와 등방화):
         // 댄스 모드 = 골반 중점 → 골반 sway가 hips를 직접 구동 (상체 lean은 spine이 별도 표현)
@@ -4205,18 +4219,19 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         }
 
         if (baseline) {
-            // 느린 적응 (τ≈10s): 순간적 sway는 표현, 장기적 위치 변화는 중립화
-            const alpha = 1 - Math.exp(-deltaTime / 10);
+            // 느린 적응: 순간적 sway는 표현, 장기적 위치 변화는 중립화
+            const alpha = getLerpFactor(deltaTime, BASELINE_ADAPT_SPEED);
             baseline.x += (refX - baseline.x) * alpha;
             baseline.y += (refY - baseline.y) * alpha;
 
             // 이미지 단위 → 미터: 영상 속 어깨 폭과 아바타 어깨 폭(양쪽 upperArm 거리)의 비율
+            // 측면 자세에서는 어깨 폭이 단축되어 스케일이 폭주하므로 분모 하한 + 스케일 상한으로 제한
             const shoulderWidthImg = Math.abs(landmarks[11].x - landmarks[12].x) * aspect;
             let scale = 0;
             if (rUpper && lUpper && shoulderWidthImg > 1e-4) {
                 const rW = rUpper.getWorldPosition(new THREE.Vector3());
                 const lW = lUpper.getWorldPosition(new THREE.Vector3());
-                scale = rW.distanceTo(lW) / shoulderWidthImg;
+                scale = Math.min(rW.distanceTo(lW) / Math.max(shoulderWidthImg, 0.08), 3.0);
             }
 
             // 미러링(-x), 이미지 y(아래+) → 월드 y(위+); 댄스 모드는 골반 sway 범위 확대
@@ -4237,6 +4252,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     // 다리: 발을 지면 rest 위치에 고정하는 Two-Bone IK
     // hips가 이동/회전하면 다리가 자연스럽게 굽혀져 발 착지 유지 (VTuber 스타일)
     // ============================================================
+    currentVrm.scene.updateWorldMatrix(true, false);
     solvePinnedFootLeg('right', deltaTime);
     solvePinnedFootLeg('left', deltaTime);
 }
@@ -4255,7 +4271,7 @@ function solvePinnedFootLeg(side, deltaTime) {
     const upperLen = lower.position.length();
     const lowerLen = foot.position.length();
 
-    currentVrm.scene.updateWorldMatrix(true, false);
+    // scene의 updateWorldMatrix는 호출부(applyPose)에서 프레임당 1회 수행
     const footTarget = currentVrm.scene.localToWorld(footRestLocal.clone());
     const hipJoint = upper.getWorldPosition(new THREE.Vector3());
     const target = footTarget.sub(hipJoint);
@@ -4328,7 +4344,7 @@ function applyHands(landmarksArray, handednesses, deltaTime) {
 // x는 영상 너비, y는 높이 기준 정규화라 스케일이 달라 aspect 보정 필요 (z는 x와 유사 스케일)
 // 부호 변환은 mpToVRM과 동일 (미러링 + y/z 반전)
 function handLmToVRM(lm) {
-    const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+    const aspect = VIDEO_ASPECT;
     return new THREE.Vector3(-lm.x * aspect, -lm.y, -lm.z * aspect);
 }
 
@@ -4389,7 +4405,11 @@ function relaxHand(prefix, deltaTime) {
     if (handBone) handBone.quaternion.slerp(IDENTITY_QUAT, factor);
 
     for (const fingerName of Object.keys(FINGER_CONFIG)) {
-        for (const boneType of ['Proximal', 'Intermediate', 'Distal']) {
+        // 엄지는 Metacarpal→Proximal→Distal (three-vrm에 ThumbIntermediate 없음)
+        const boneTypes = fingerName === 'Thumb'
+            ? ['Metacarpal', 'Proximal', 'Distal']
+            : ['Proximal', 'Intermediate', 'Distal'];
+        for (const boneType of boneTypes) {
             const bone = currentVrm.humanoid.getNormalizedBoneNode(prefix + fingerName + boneType);
             if (bone) bone.quaternion.slerp(IDENTITY_QUAT, factor);
         }
@@ -4412,7 +4432,7 @@ function applyFingers(prefix, landmarks, factor) {
     const isRight = prefix === 'right';
 
     // 이미지 정규화 좌표는 x/y 스케일이 달라(1280 vs 720) 거리 계산 전에 aspect 보정
-    const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+    const aspect = VIDEO_ASPECT;
     const lmVec = (i) => new THREE.Vector3(landmarks[i].x * aspect, landmarks[i].y, landmarks[i].z * aspect);
 
     for (const [fingerName, config] of Object.entries(FINGER_CONFIG)) {
@@ -4478,28 +4498,29 @@ function applyFingerCurl(prefix, fingerName, curl, factor) {
 }
 
 // 엄지 curl 적용
+// 주의: three-vrm 표준 엄지 본은 Metacarpal→Proximal→Distal ('ThumbIntermediate'는 존재하지 않음)
 function applyThumbCurl(prefix, curl, factor) {
     const isRight = prefix === 'right';
     // rig의 rest 방향이 VRM0는 반대라 회전 부호도 반전
     const dir = (isRight ? -1 : 1) * (currentVrm.meta?.metaVersion === '0' ? -1 : 1);
 
+    const metacarpal = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'ThumbMetacarpal');
     const proximal = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'ThumbProximal');
-    const intermediate = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'ThumbIntermediate');
     const distal = currentVrm.humanoid.getNormalizedBoneNode(prefix + 'ThumbDistal');
 
     // 엄지는 손바닥에서 비스듬히 나오므로 Y축 회전으로 손바닥 안쪽으로 접힘
-    const maxAngles = { proximal: 0.4, intermediate: 0.45, distal: 0.4 };
+    const maxAngles = { metacarpal: 0.35, proximal: 0.45, distal: 0.4 };
+
+    if (metacarpal) {
+        const angle = curl * Math.PI * maxAngles.metacarpal;
+        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle * dir, 0));
+        metacarpal.quaternion.slerp(rotation, factor);
+    }
 
     if (proximal) {
         const angle = curl * Math.PI * maxAngles.proximal;
         const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle * dir, 0));
         proximal.quaternion.slerp(rotation, factor);
-    }
-
-    if (intermediate) {
-        const angle = curl * Math.PI * maxAngles.intermediate;
-        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle * dir, 0));
-        intermediate.quaternion.slerp(rotation, factor);
     }
 
     if (distal) {
