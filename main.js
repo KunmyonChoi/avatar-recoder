@@ -3551,8 +3551,12 @@ async function setupMediaPipe() {
             numFaces: 1
         });
 
-        // 모바일은 성능 우선(lite), 데스크톱은 정확도 우선(full) — lite는 팔꿈치/손목 depth 오차가 큼
-        const poseModel = isMobile ? 'pose_landmarker_lite' : 'pose_landmarker_full';
+        // 기본 lite (full은 실시간 구동이 어려울 만큼 느림 — 전체 앱 프레임 저하 확인됨)
+        // 정확도 실험용으로 ?poseModel=full|heavy URL 파라미터 지원
+        const poseModelParam = new URLSearchParams(window.location.search).get('poseModel');
+        const poseModel = (poseModelParam === 'full' || poseModelParam === 'heavy')
+            ? `pose_landmarker_${poseModelParam}`
+            : 'pose_landmarker_lite';
         poseLandmarker = await PoseLandmarker.createFromOptions(filesetResolver, {
             baseOptions: {
                 modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/${poseModel}/float16/1/${poseModel}.task`,
