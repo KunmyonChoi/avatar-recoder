@@ -3771,6 +3771,8 @@ function animate() {
 
                 // Pose tracking
                 let poseDetected = false;
+                let framePoseLandmarks = null;
+                let frameWorldLandmarks = null;
                 if (poseLandmarker) {
                     const poseResults = poseLandmarker.detectForVideo(video, currentTime);
                     if (poseResults.landmarks && poseResults.landmarks.length > 0) {
@@ -3781,6 +3783,8 @@ function animate() {
                         const { filteredLandmarks, filteredWorldLandmarks } = getFilteredPoseLandmarks(
                             rawLandmarks, rawWorldLandmarks, currentTime
                         );
+                        framePoseLandmarks = filteredLandmarks;
+                        frameWorldLandmarks = filteredWorldLandmarks;
 
                         applyPose(filteredLandmarks, filteredWorldLandmarks, deltaTime);
                         poseDetected = true;
@@ -3807,6 +3811,10 @@ function animate() {
                     if (!detectedHands.left) relaxHand('left', deltaTime);
                     if (!detectedHands.right) relaxHand('right', deltaTime);
                 }
+
+                // 모션 레코딩: 입력(랜드마크)과 출력(본 회전)을 프레임 단위로 기록
+                // (본 적용이 모두 끝난 시점에 캡처해야 입력↔출력이 같은 프레임으로 짝지어짐)
+                captureMotionFrame(framePoseLandmarks, frameWorldLandmarks, currentTime);
             } else {
                 // Body tracking 비활성화 시 팔을 자연스럽게 내림
                 resetPose(deltaTime);
@@ -4020,12 +4028,86 @@ function dumpPoseDebug() {
     );
 }
 
+// --- 모션 레코딩 (디버깅용): 입력 랜드마크 + 출력 본 회전 시계열 기록 ---
+// R로 시작/정지. 정지 시 JSON 다운로드 — 오프라인에서 solver 수정안을 같은 입력으로
+// 재생·비교할 수 있어, "정지 자세는 맞는데 움직임에서 깨지는" 문제 분석에 사용
+let motionRecording = false;
+let motionRecordBuffer = null;
+let motionRecordStart = 0;
+const MOTION_RECORD_MAX_FRAMES = 3000; // ~100초 @30fps 자동 정지
+
+function captureMotionFrame(landmarks, worldLandmarks, t) {
+    if (!motionRecording || !motionRecordBuffer || !currentVrm) return;
+
+    const rnd = (v) => +v.toFixed(4);
+    const packPose = (arr) => arr ? arr.map(l => [rnd(l.x), rnd(l.y), rnd(l.z), rnd(l.visibility ?? 1)]) : null;
+    const packHand = (arr) => arr ? arr.map(l => [rnd(l.x), rnd(l.y), rnd(l.z)]) : null;
+
+    const bones = {};
+    for (const [name] of AXES_DEBUG_BONES) {
+        const b = currentVrm.humanoid.getNormalizedBoneNode(name);
+        if (b) bones[name] = [rnd(b.quaternion.x), rnd(b.quaternion.y), rnd(b.quaternion.z), rnd(b.quaternion.w)];
+    }
+
+    motionRecordBuffer.frames.push({
+        t: +(t - motionRecordStart).toFixed(1),
+        pose: packPose(landmarks),
+        world: packPose(worldLandmarks),
+        handL: packHand(detectedHands.left),
+        handR: packHand(detectedHands.right),
+        states: { leftArmActive, rightArmActive, danceMode },
+        bones
+    });
+
+    if (motionRecordBuffer.frames.length >= MOTION_RECORD_MAX_FRAMES) {
+        console.log('[debug] 모션 레코딩 최대 길이 도달 — 자동 정지');
+        stopMotionRecording();
+    }
+}
+
+function startMotionRecording() {
+    motionRecordBuffer = {
+        meta: {
+            model: currentAvatarUrl,
+            vrmVersion: currentVrm?.meta?.metaVersion ?? '1',
+            videoWidth: VIDEO_WIDTH,
+            videoHeight: VIDEO_HEIGHT,
+            startedAt: new Date().toISOString()
+        },
+        frames: []
+    };
+    motionRecordStart = performance.now();
+    motionRecording = true;
+    console.log('[debug] 모션 레코딩 시작 — R로 정지하면 JSON 다운로드');
+}
+
+function stopMotionRecording() {
+    motionRecording = false;
+    if (!motionRecordBuffer || motionRecordBuffer.frames.length === 0) {
+        console.log('[debug] 기록된 프레임 없음');
+        motionRecordBuffer = null;
+        return;
+    }
+    const blob = new Blob([JSON.stringify(motionRecordBuffer)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `motion-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    console.log(`[debug] 모션 레코딩 저장: ${motionRecordBuffer.frames.length} 프레임`);
+    motionRecordBuffer = null;
+}
+
 document.addEventListener('keydown', (e) => {
     if (!DEBUG_MODE) return;
     const tag = e.target?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
 
-    if (e.key === 'f' || e.key === 'F') {
+    if (e.key === 'r' || e.key === 'R') {
+        if (motionRecording) stopMotionRecording();
+        else startMotionRecording();
+    } else if (e.key === 'f' || e.key === 'F') {
         poseFrozen = !poseFrozen;
         console.log(`[debug] 포즈 프리즈: ${poseFrozen ? 'ON — N으로 본 선택, D로 덤프' : 'OFF'}`);
         if (!poseFrozen) deselectDebugBone();
