@@ -4165,10 +4165,10 @@ function updateDebug3D(worldLandmarks) {
 // ============================================================
 // 팔다리가 거의 일직선일 때 planeNormal이 노이즈로 요동치는 것을 막기 위한 체인별 상태
 const ikPlaneState = {
-    right: { normal: null },
-    left: { normal: null },
-    rightLeg: { normal: null },
-    leftLeg: { normal: null }
+    right: { normal: null, twistFlip: false },
+    left: { normal: null, twistFlip: false },
+    rightLeg: { normal: null, twistFlip: false },
+    leftLeg: { normal: null, twistFlip: false }
 };
 
 // 본 회전을 swing(방향)과 twist(본 축 비틀림)로 분해해 서로 다른 속도로 수렴시킴.
@@ -4269,9 +4269,6 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     const parentWorldQuat = getParentWorldQuaternion(upperBone);
     const qUpperLocal = worldToLocalQuaternion(qUpperFinal, parentWorldQuat);
 
-    // 방향은 기존 속도로, 본 축 비틀림은 느리게 수렴 (어깨 스핀 완화)
-    slerpSwingTwist(upperBone, qUpperLocal, boneAxis, factor, getLerpFactor(deltaTime, 3));
-
     // 8. Lower Bone (팔꿈치/무릎) 회전 계산
     // hinge joint: 굽힘 각도 = π - elbowAngle (펴진 상태가 π)
     // qUpperFinal이 로컬 hingeAxis를 world planeNormal에 정렬시켰으므로,
@@ -4279,7 +4276,34 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     const bendAngle = Math.PI - elbowAngle;
     const qLowerLocal = new THREE.Quaternion().setFromAxisAngle(hingeAxis, -bendAngle);
 
-    lowerBone.quaternion.slerp(qLowerLocal, factor);
+    // 8.5 비틀림 가지 선택 — hinge 정렬 해는 ±180° 비틀림 차이의 두 가지(world 자세
+    // 동일)가 존재. 팔을 들면 정렬 비틀림이 ~240°까지 누적되어 어깨 mesh가 감기므로
+    // (모션 레코딩 실측: +32°→+240°, 손목 역보정 ~180°), rest에 가까운 가지를
+    // hysteresis(진입 105° / 해제 35°)로 선택. 상·하위에 같은 180°를 반대로 곱해
+    // 곱(=팔의 world 자세·팔꿈치 평면)은 정확히 보존됨.
+    // 오프라인 재생 검증: 이 레코딩에서 전환 1회, 비틀림 범위 -63°~+103°로 제한.
+    if (planeState) {
+        const qs = qUpperLocal.clone();
+        if (qs.w < 0) qs.set(-qs.x, -qs.y, -qs.z, -qs.w);
+        const dAxis = qs.x * boneAxis.x + qs.y * boneAxis.y + qs.z * boneAxis.z;
+        const twistAbsDeg = Math.abs(2 * Math.atan2(dAxis, qs.w)) * (180 / Math.PI);
+        if (!planeState.twistFlip && twistAbsDeg > 105) {
+            planeState.twistFlip = true;
+        } else if (planeState.twistFlip && twistAbsDeg < 35) {
+            planeState.twistFlip = false;
+        }
+        if (planeState.twistFlip) {
+            const qPi = new THREE.Quaternion().setFromAxisAngle(boneAxis, Math.PI);
+            qUpperLocal.multiply(qPi);
+            qLowerLocal.premultiply(qPi); // 180° 회전은 자기 역원 — 곱 보존
+        }
+    }
+
+    // 방향은 기존 속도로, 본 축 비틀림은 느리게 수렴.
+    // 하위 본에도 같은 twist 속도 제한을 걸어 가지 전환 시 상·하위가 함께 굴러
+    // 위상이 어긋나지 않게 함 (재분배 실험 실패의 원인이었던 비대칭 스무딩 방지)
+    slerpSwingTwist(upperBone, qUpperLocal, boneAxis, factor, getLerpFactor(deltaTime, 3));
+    slerpSwingTwist(lowerBone, qLowerLocal, boneAxis, factor, getLerpFactor(deltaTime, 3));
 }
 
 function applyPose(landmarks, worldLandmarks, deltaTime) {
@@ -4439,6 +4463,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const neutralQuat = new THREE.Quaternion();
         slerpSwingTwist(rUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (rLower) rLower.quaternion.slerp(neutralQuat, factor * 0.3);
+        ikPlaneState.right.twistFlip = false;
     }
 
     // --- Avatar Left Arm ← MediaPipe Right Body(12,14,16) + Hand(0) ---
@@ -4466,6 +4491,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const neutralQuat = new THREE.Quaternion();
         slerpSwingTwist(lUpper, relaxQuat, new THREE.Vector3(1, 0, 0), factor * 0.3, getLerpFactor(deltaTime, 2));
         if (lLower) lLower.quaternion.slerp(neutralQuat, factor * 0.3);
+        ikPlaneState.left.twistFlip = false;
     }
 
     // ============================================================
