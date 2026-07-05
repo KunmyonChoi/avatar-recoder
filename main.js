@@ -3950,7 +3950,11 @@ const ikPlaneState = {
     leftLeg: { normal: null }
 };
 
-function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPos, polePos, boneAxis, deltaTime, planeState) {
+// boneAxis는 rig 로컬(로드 시점 프레임) 기준 rest 방향.
+// localForwardZ: rig 로컬 전방의 Z 부호 — VRM1은 +1, VRM0은 rig가 rotateVRM0 이전
+// 프레임(모델이 -Z를 향하던 시점) 기준이라 -1. hinge 축 계산에 사용되며,
+// 틀리면 twist 정렬이 팔다리를 180° 비틀어 무릎/발이 뒤로 돌아감.
+function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPos, polePos, boneAxis, deltaTime, planeState, localForwardZ = 1) {
     if (!upperBone || !lowerBone) return;
 
     const factor = getLerpFactor(deltaTime);
@@ -4012,8 +4016,8 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     // 6. Upper Arm 회전 계산
     const qUpper = new THREE.Quaternion().setFromUnitVectors(boneAxis, upperDir);
 
-    // 팔꿈치 방향(hinge) 정렬
-    const hingeAxis = new THREE.Vector3().crossVectors(boneAxis, new THREE.Vector3(0, 0, 1)).normalize();
+    // 팔꿈치/무릎 방향(hinge) 정렬 — rig 로컬 전방 기준으로 계산
+    const hingeAxis = new THREE.Vector3().crossVectors(boneAxis, new THREE.Vector3(0, 0, localForwardZ)).normalize();
     const currentHinge = hingeAxis.clone().applyQuaternion(qUpper);
     const qTwist = new THREE.Quaternion().setFromUnitVectors(currentHinge, planeNormal);
     const qUpperFinal = qTwist.multiply(qUpper);
@@ -4184,7 +4188,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime, ikPlaneState.right);
+        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime, ikPlaneState.right, isVRM0 ? -1 : 1);
     } else if (rUpper && !leftArmActive) {
         // 팔 내리기
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
@@ -4211,7 +4215,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime, ikPlaneState.left);
+        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime, ikPlaneState.left, isVRM0 ? -1 : 1);
     } else if (lUpper && !rightArmActive) {
         // 팔 내리기
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
@@ -4308,8 +4312,10 @@ function solvePinnedFootLeg(side, deltaTime) {
     const pole = target.clone().multiplyScalar(0.5)
         .addScaledVector(new THREE.Vector3(0, 0, 1), (upperLen + lowerLen) * 0.4);
 
+    // VRM0는 rig 로컬 전방이 -Z (hinge 축이 반대가 되어 발이 180° 돌아가는 것 방지)
+    const isVRM0 = currentVrm.meta?.metaVersion === '0';
     solveTwoBoneIK(upper, lower, upperLen, lowerLen, target, pole,
-        new THREE.Vector3(0, -1, 0), deltaTime, ikPlaneState[side + 'Leg']);
+        new THREE.Vector3(0, -1, 0), deltaTime, ikPlaneState[side + 'Leg'], isVRM0 ? -1 : 1);
 }
 
 // ============================================================
