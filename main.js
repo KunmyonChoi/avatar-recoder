@@ -4564,10 +4564,20 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     // 입 벌림 (あ) - jawOpen을 직접 사용
     let aaScore = getScore('jawOpen');
 
-    // 입 모으기 (う) - mouthPucker 사용
+    // 둥근 입 - "우"(Ou)와 "오"(Oh) 구분:
+    // 입을 둥글게 모은 상태(pucker/funnel)에서 턱이 벌어질수록 Ou → Oh로 전환
+    // (Oh 미지원 모델은 기존처럼 전부 Ou로)
     const mouthPucker = getScore('mouthPucker');
     const mouthFunnel = getScore('mouthFunnel');
-    let ouScore = Math.max(mouthPucker, mouthFunnel * 0.7);
+    const roundness = Math.max(mouthPucker, mouthFunnel * 0.8);
+    const hasOh = expressions.getValue(presetName.Oh) !== null;
+    const openWeight = hasOh ? THREE.MathUtils.clamp((aaScore - 0.05) / 0.25, 0, 1) : 0;
+    let ouScore = roundness * (1 - openWeight);
+    let ohScore = roundness * openWeight;
+    if (ohScore > 0) {
+        // Oh morph가 자체적으로 턱을 벌리므로 Aa의 중복 벌림을 완화
+        aaScore *= (1 - ohScore * 0.6);
+    }
 
     // 입 넓히기 (い) - mouthStretch 사용
     const mouthStretchL = getScore('mouthStretchLeft');
@@ -4617,12 +4627,13 @@ function applyBlendshapes(blendShapesData, deltaTime) {
 
     // 입 morph 합계 정규화: 여러 viseme을 동시에 최대치로 걸면 일부 모델(특히 VRM0)의
     // 입술 위·턱 아래 mesh가 찢어져 빈 공간/흐릿한 부분이 보임 → 합이 1을 넘으면 비례 축소
-    const mouthSum = aaScore + ouScore + ihScore;
+    const mouthSum = aaScore + ouScore + ihScore + ohScore;
     if (mouthSum > 1) {
         const s = 1 / mouthSum;
         aaScore *= s;
         ouScore *= s;
         ihScore *= s;
+        ohScore *= s;
     }
 
     const setMouth = (name, target) => {
@@ -4633,6 +4644,7 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     setMouth(presetName.Aa, aaScore);
     setMouth(presetName.Ou, ouScore);
     setMouth(presetName.Ih, ihScore);
+    setMouth(presetName.Oh, ohScore);
 
     // ============================================================
     // 3. 표정 (감정) - 입모양(lip sync)을 완전히 덮지 않는 선에서 과장
