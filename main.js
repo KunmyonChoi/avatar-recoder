@@ -4557,21 +4557,22 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     };
 
     // ============================================================
-    // 1. 입모양 (Lip Sync) 목표값 계산 — 적용은 놀람 처리 후 일괄 수행
+    // 1. 입모양 (Lip Sync) 목표값 계산 — 적용은 아래에서 일괄 수행
+    // 입모양은 과장 없이 실측값 사용 (과장 시 부자연스럽다는 피드백 반영)
     // ============================================================
 
-    // 입 벌림 (あ) - jawOpen 과장 적용 (살짝 벌려도 크게 벌린 것처럼)
-    let aaScore = exaggerate(getScore('jawOpen'), 0.03, 0.7);
+    // 입 벌림 (あ) - jawOpen을 직접 사용
+    let aaScore = getScore('jawOpen');
 
     // 입 모으기 (う) - mouthPucker 사용
     const mouthPucker = getScore('mouthPucker');
     const mouthFunnel = getScore('mouthFunnel');
-    let ouScore = exaggerate(Math.max(mouthPucker, mouthFunnel * 0.7), 0.05, 0.8);
+    let ouScore = Math.max(mouthPucker, mouthFunnel * 0.7);
 
     // 입 넓히기 (い) - mouthStretch 사용
     const mouthStretchL = getScore('mouthStretchLeft');
     const mouthStretchR = getScore('mouthStretchRight');
-    let ihScore = exaggerate((mouthStretchL + mouthStretchR) / 2, 0.05, 0.8) * 0.7;
+    let ihScore = ((mouthStretchL + mouthStretchR) / 2) * 0.5;
 
     // ============================================================
     // 2. 눈 (독립적으로 동작)
@@ -4614,22 +4615,14 @@ function applyBlendshapes(blendShapesData, deltaTime) {
         expressions.setValue(presetName.Surprised, THREE.MathUtils.lerp(currentSurprised, surprisedScore, factor));
     }
 
-    // 놀란 입 과장: 놀람 중 입을 벌리면 Aa를 추가 증폭하고 O자(Oh) 모양을 더함
-    let ohScore = 0;
-    if (surprisedScore > 0.05) {
-        aaScore = Math.min(1, aaScore * (1 + surprisedScore * 0.7));
-        ohScore = Math.min(0.8, aaScore * surprisedScore * 1.2);
-    }
-
     // 입 morph 합계 정규화: 여러 viseme을 동시에 최대치로 걸면 일부 모델(특히 VRM0)의
     // 입술 위·턱 아래 mesh가 찢어져 빈 공간/흐릿한 부분이 보임 → 합이 1을 넘으면 비례 축소
-    const mouthSum = aaScore + ouScore + ihScore + ohScore;
+    const mouthSum = aaScore + ouScore + ihScore;
     if (mouthSum > 1) {
         const s = 1 / mouthSum;
         aaScore *= s;
         ouScore *= s;
         ihScore *= s;
-        ohScore *= s;
     }
 
     const setMouth = (name, target) => {
@@ -4640,7 +4633,6 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     setMouth(presetName.Aa, aaScore);
     setMouth(presetName.Ou, ouScore);
     setMouth(presetName.Ih, ihScore);
-    setMouth(presetName.Oh, ohScore);
 
     // ============================================================
     // 3. 표정 (감정) - 입모양(lip sync)을 완전히 덮지 않는 선에서 과장
