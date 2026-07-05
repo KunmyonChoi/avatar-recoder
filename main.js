@@ -4112,10 +4112,11 @@ function slerpSwingTwist(bone, qTarget, axis, swingFactor, twistFactor) {
 }
 
 // boneAxis는 rig 로컬(로드 시점 프레임) 기준 rest 방향.
-// localForwardZ: rig 로컬 전방의 Z 부호 — VRM1은 +1, VRM0은 rig가 rotateVRM0 이전
-// 프레임(모델이 -Z를 향하던 시점) 기준이라 -1. hinge 축 계산에 사용되며,
-// 틀리면 twist 정렬이 팔다리를 180° 비틀어 무릎/발이 뒤로 돌아감.
-function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPos, polePos, boneAxis, deltaTime, planeState, localForwardZ = 1) {
+// 상·하위 본 모두 swing-only 회전 사용 (축 비틀림 없음) — hinge 축을 planeNormal에
+// twist로 정렬하던 이전 방식은 상완에 비틀림을 집중시켜(실측 -130°) 어깨 mesh 감김과
+// 손목 역보정(~156°)을 유발했음. 방향 정보가 전부 실측 랜드마크에서 오므로
+// swing만으로 유효한 자세가 나옴 (프리즈 덤프 A/B 비교로 검증: 목표 twist ≈ -16°).
+function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPos, polePos, boneAxis, deltaTime, planeState) {
     if (!upperBone || !lowerBone) return;
 
     const factor = getLerpFactor(deltaTime);
@@ -4141,10 +4142,6 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
     const cosShoulderAngle = (a * a + c * c - b * b) / (2 * a * c);
     const shoulderAngle = Math.acos(THREE.MathUtils.clamp(cosShoulderAngle, -1, 1));
 
-    // 3. 코사인 법칙으로 팔꿈치 각도 계산
-    const cosElbowAngle = (a * a + b * b - c * c) / (2 * a * b);
-    const elbowAngle = Math.acos(THREE.MathUtils.clamp(cosElbowAngle, -1, 1));
-
     // 4. IK 평면 계산 (어깨→손목 방향과 팔꿈치 방향으로 정의)
     const dirToTarget = targetPos.clone().normalize();
     const dirToPole = polePos.clone().normalize();
@@ -4169,33 +4166,29 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
         planeState.normal = planeState.normal ? planeState.normal.copy(planeNormal) : planeNormal.clone();
     }
 
-    // 5. Upper Arm (어깨) 방향 계산
-    // 목표 방향에서 shoulderAngle만큼 회전
+    // 5. Upper (상완/허벅지) 방향 계산
+    // 목표 방향에서 shoulderAngle만큼 pole 쪽으로 기울임
     const qBend = new THREE.Quaternion().setFromAxisAngle(planeNormal, shoulderAngle);
     const upperDir = dirToTarget.clone().applyQuaternion(qBend).normalize();
 
-    // 6. Upper Arm 회전 계산
-    const qUpper = new THREE.Quaternion().setFromUnitVectors(boneAxis, upperDir);
-
-    // 팔꿈치/무릎 방향(hinge) 정렬 — rig 로컬 전방 기준으로 계산
-    const hingeAxis = new THREE.Vector3().crossVectors(boneAxis, new THREE.Vector3(0, 0, localForwardZ)).normalize();
-    const currentHinge = hingeAxis.clone().applyQuaternion(qUpper);
-    const qTwist = new THREE.Quaternion().setFromUnitVectors(currentHinge, planeNormal);
-    const qUpperFinal = qTwist.multiply(qUpper);
+    // 6. Upper 회전 = swing-only (축 비틀림 없음)
+    const qUpperFinal = new THREE.Quaternion().setFromUnitVectors(boneAxis, upperDir);
 
     // 7. 부모 좌표계를 고려한 로컬 회전 적용
     const parentWorldQuat = getParentWorldQuaternion(upperBone);
     const qUpperLocal = worldToLocalQuaternion(qUpperFinal, parentWorldQuat);
 
-    // 방향은 기존 속도로, 본 축 비틀림은 느리게 수렴 (어깨 스핀 완화)
+    // 방향은 기존 속도로, 본 축 비틀림은 느리게 수렴 (전환 스무딩)
     slerpSwingTwist(upperBone, qUpperLocal, boneAxis, factor, getLerpFactor(deltaTime, 3));
 
-    // 8. Lower Bone (팔꿈치/무릎) 회전 계산
-    // hinge joint: 굽힘 각도 = π - elbowAngle (펴진 상태가 π)
-    // qUpperFinal이 로컬 hingeAxis를 world planeNormal에 정렬시켰으므로,
-    // 로컬 hingeAxis 축 -bendAngle 회전 = world planeNormal 축 -bendAngle (pole 반대쪽으로 굽힘)
-    const bendAngle = Math.PI - elbowAngle;
-    const qLowerLocal = new THREE.Quaternion().setFromAxisAngle(hingeAxis, -bendAngle);
+    // 8. Lower (전완/정강이): 실제 가리켜야 할 방향으로의 swing 회전 (2-DOF)
+    // elbow = a·upperDir, wrist = targetPos → lowerDir = (target - a·upperDir), 길이 ≈ b.
+    // 방향 자체가 실측 랜드마크 기하에서 오므로 hinge 축 정렬 없이도 유효한 자세가 됨
+    const lowerDirLocal = targetPos.clone().addScaledVector(upperDir, -a)
+        .applyQuaternion(qUpperFinal.clone().invert());
+    if (lowerDirLocal.lengthSq() < 1e-10) return;
+    lowerDirLocal.normalize();
+    const qLowerLocal = new THREE.Quaternion().setFromUnitVectors(boneAxis, lowerDirLocal);
 
     lowerBone.quaternion.slerp(qLowerLocal, factor);
 }
@@ -4350,7 +4343,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime, ikPlaneState.right, isVRM0 ? -1 : 1);
+        solveTwoBoneIK(rUpper, rLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? 1 : -1, 0, 0), deltaTime, ikPlaneState.right);
     } else if (rUpper && !leftArmActive) {
         // 팔 내리기 — 방향은 부드럽게, 비틀림은 더 느리게 (복귀 시 어깨 스핀 완화)
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
@@ -4377,7 +4370,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const target = new THREE.Vector3().subVectors(mpWrist, mpShoulder).multiplyScalar(scale);
         const pole = new THREE.Vector3().subVectors(mpElbow, mpShoulder).multiplyScalar(scale);
 
-        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime, ikPlaneState.left, isVRM0 ? -1 : 1);
+        solveTwoBoneIK(lUpper, lLower, upperLen, lowerLen, target, pole, new THREE.Vector3(isVRM0 ? -1 : 1, 0, 0), deltaTime, ikPlaneState.left);
     } else if (lUpper && !rightArmActive) {
         // 팔 내리기 — 방향은 부드럽게, 비틀림은 더 느리게 (복귀 시 어깨 스핀 완화)
         const relaxQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI * 0.45 * (isVRM0 ? -1 : 1), 'XYZ'));
@@ -4474,10 +4467,8 @@ function solvePinnedFootLeg(side, deltaTime) {
     const pole = target.clone().multiplyScalar(0.5)
         .addScaledVector(new THREE.Vector3(0, 0, 1), (upperLen + lowerLen) * 0.4);
 
-    // VRM0는 rig 로컬 전방이 -Z (hinge 축이 반대가 되어 발이 180° 돌아가는 것 방지)
-    const isVRM0 = currentVrm.meta?.metaVersion === '0';
     solveTwoBoneIK(upper, lower, upperLen, lowerLen, target, pole,
-        new THREE.Vector3(0, -1, 0), deltaTime, ikPlaneState[side + 'Leg'], isVRM0 ? -1 : 1);
+        new THREE.Vector3(0, -1, 0), deltaTime, ikPlaneState[side + 'Leg']);
 }
 
 // ============================================================
