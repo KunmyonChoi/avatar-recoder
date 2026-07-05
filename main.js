@@ -3798,6 +3798,15 @@ function resetPose(deltaTime) {
         if (bone) bone.quaternion.slerp(neutralLower, factor);
     }
 
+    // Hips 회전/높이 복귀
+    const hips = currentVrm.humanoid.getNormalizedBoneNode('hips');
+    if (hips) {
+        hips.quaternion.slerp(neutralLower, factor);
+        if (currentVrm.userData.hipsRestY !== undefined) {
+            hips.position.y = THREE.MathUtils.lerp(hips.position.y, currentVrm.userData.hipsRestY, factor);
+        }
+    }
+
     // 활성 상태 리셋
     leftArmActive = false;
     rightArmActive = false;
@@ -3956,7 +3965,24 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     const lLower = currentVrm.humanoid.getNormalizedBoneNode('leftLowerArm');
     const lHand = currentVrm.humanoid.getNormalizedBoneNode('leftHand');
 
+    // --- Hips 회전 (골반 롤/요) ---
+    // 회전 부호는 spine과 동일한 규약: Y축 회전은 rotateVRM0(180°Y)에 불변이라 yaw는 버전 공통,
+    // Z축(roll)만 VRM0에서 반전
+    const hips = currentVrm.humanoid.getNormalizedBoneNode('hips');
+    const hipsQuat = new THREE.Quaternion();
+    if (hips && landmarks) {
+        const mpLHip = landmarks[23];
+        const mpRHip = landmarks[24];
+
+        const rollH = (mpRHip.y - mpLHip.y) * 1.2 * (isVRM0 ? -1 : 1);
+        const yawH = (mpRHip.z - mpLHip.z) * 1.0;
+
+        hipsQuat.setFromEuler(new THREE.Euler(0, yawH, rollH, 'XYZ'));
+        hips.quaternion.slerp(hipsQuat, factor * 0.5);
+    }
+
     // --- Spine 회전 (상체 기울기) ---
+    // hips가 이미 골반 회전을 반영하므로, spine은 어깨 회전에서 골반 회전을 뺀 잔여분만 적용
     const spine = currentVrm.humanoid.getNormalizedBoneNode('spine');
     if (spine && landmarks) {
         const mpLeft = landmarks[11];  // 왼쪽 어깨
@@ -3969,7 +3995,8 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         const roll = dy * 1.2 * (isVRM0 ? -1 : 1);  // Z축 회전 (VRM 0.x: 방향 반전)
         const yaw = dz * 1.0;   // Y축 회전 (어깨 회전)
 
-        const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, roll, 'XYZ'));
+        const qShoulder = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, roll, 'XYZ'));
+        const q = hipsQuat.clone().invert().multiply(qShoulder);
         spine.quaternion.slerp(q, factor * 0.5); // 상체는 더 부드럽게
     }
 
@@ -4124,6 +4151,59 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         // 곧게 선 자세로 복귀
         lUpperLeg.quaternion.slerp(straightLeg, factor * 0.3);
         if (lLowerLeg) lLowerLeg.quaternion.slerp(straightLeg, factor * 0.3);
+    }
+
+    // ============================================================
+    // Hips 상하 이동 (앉기/스쿼트 시 발 착지 유지)
+    // World landmark는 hip 원점 기준이라 절대 위치가 없으므로,
+    // 다리의 수직 신장 비율(hip-ankle 높이차 / 다리 길이)로 hips 하강량을 역산
+    // ============================================================
+    if (hips) {
+        if (currentVrm.userData.hipsRestY === undefined) {
+            currentVrm.userData.hipsRestY = hips.position.y;
+        }
+        const restY = currentVrm.userData.hipsRestY;
+        let targetY = restY;
+
+        // 활성 다리별 하강량 계산 후 최솟값 사용 (한쪽 다리가 곧게 서 있으면 hips 유지)
+        let minDrop = null;
+
+        if (leftLegActive && rLowerLeg && rFoot) {
+            const legLen = rLowerLeg.position.length() + rFoot.position.length();
+            const mpHip = getPos(23);
+            const mpKnee = getPos(25);
+            const mpAnkle = getPos(27);
+            const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
+            if (mpLegLen > 1e-6) {
+                const extentRatio = (mpHip.y - mpAnkle.y) / mpLegLen; // 1 = 곧게 선 상태
+                const bend = THREE.MathUtils.clamp(1 - extentRatio, 0, 1);
+                const drop = Math.max(0, bend - 0.08) * legLen; // 직립 시 잔여 오차 deadzone
+                minDrop = minDrop === null ? drop : Math.min(minDrop, drop);
+            }
+        }
+
+        if (rightLegActive && lLowerLeg && lFoot) {
+            const legLen = lLowerLeg.position.length() + lFoot.position.length();
+            const mpHip = getPos(24);
+            const mpKnee = getPos(26);
+            const mpAnkle = getPos(28);
+            const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
+            if (mpLegLen > 1e-6) {
+                const extentRatio = (mpHip.y - mpAnkle.y) / mpLegLen;
+                const bend = THREE.MathUtils.clamp(1 - extentRatio, 0, 1);
+                const drop = Math.max(0, bend - 0.08) * legLen;
+                minDrop = minDrop === null ? drop : Math.min(minDrop, drop);
+            }
+        }
+
+        if (minDrop !== null) {
+            const legLenRef = (rLowerLeg && rFoot)
+                ? rLowerLeg.position.length() + rFoot.position.length()
+                : 0.8;
+            targetY = restY - Math.min(minDrop, legLenRef * 0.55);
+        }
+
+        hips.position.y = THREE.MathUtils.lerp(hips.position.y, targetY, factor * 0.5);
     }
 }
 
