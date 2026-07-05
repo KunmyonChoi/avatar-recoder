@@ -3948,10 +3948,11 @@ function setBoneAxesVisible(visible) {
 // --- 포즈 프리즈 & 본 수동 편집 (디버깅용) ---
 // Landmarks ON 상태에서 키보드로 조작:
 //   F  : 포즈 프리즈 토글 (트래킹 적용 중지, 렌더링은 유지)
-//   B  : 편집할 본 순환 선택 (Shift+B 역방향) → TransformControls 기즈모로 회전
+//   N  : 편집할 본 순환 선택 (Shift+N 역방향) → TransformControls 기즈모로 회전
 //   Esc: 본 선택 해제
-//   P  : 현재 본 상태 덤프 (콘솔 + 클립보드) — 트래킹 결과/수동 개선치를
+//   D  : 현재 본 상태 덤프 (콘솔 + 클립보드) — 트래킹 결과/수동 개선치를
 //        JSON으로 뽑아 비교·분석에 활용하는 재귀 보정 워크플로우용
+// 주의: B(블랙아웃)·P(펜 도구) 등 기존 앱 단축키와 겹치지 않는 키만 사용
 let poseFrozen = false;
 let boneEditControls = null;
 let boneEditIndex = -1;
@@ -3981,7 +3982,7 @@ function selectDebugBone(step) {
     boneEditIndex = (boneEditIndex + step + names.length) % names.length;
     const name = names[boneEditIndex];
     controls.attach(currentVrm.humanoid.getNormalizedBoneNode(name));
-    console.log(`[debug] 본 선택: ${name} (B: 다음, Shift+B: 이전, Esc: 해제, 기즈모 드래그로 회전)`);
+    console.log(`[debug] 본 선택: ${name} (N: 다음, Shift+N: 이전, Esc: 해제, 기즈모 드래그로 회전)`);
 }
 
 function deselectDebugBone() {
@@ -4026,13 +4027,13 @@ document.addEventListener('keydown', (e) => {
 
     if (e.key === 'f' || e.key === 'F') {
         poseFrozen = !poseFrozen;
-        console.log(`[debug] 포즈 프리즈: ${poseFrozen ? 'ON — B로 본 선택, P로 덤프' : 'OFF'}`);
+        console.log(`[debug] 포즈 프리즈: ${poseFrozen ? 'ON — N으로 본 선택, D로 덤프' : 'OFF'}`);
         if (!poseFrozen) deselectDebugBone();
-    } else if (e.key === 'p' || e.key === 'P') {
+    } else if (e.key === 'd' || e.key === 'D') {
         dumpPoseDebug();
-    } else if (e.key === 'b') {
+    } else if (e.key === 'n') {
         selectDebugBone(1);
-    } else if (e.key === 'B') {
+    } else if (e.key === 'N') {
         selectDebugBone(-1);
     } else if (e.key === 'Escape') {
         deselectDebugBone();
