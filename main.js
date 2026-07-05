@@ -3923,6 +3923,7 @@ function resetPose(deltaTime) {
     for (const key of ['right', 'left', 'rightLeg', 'leftLeg']) {
         ikPlaneState[key].twistFlip = false;
         ikPlaneState[key].pronation = 0;
+        ikPlaneState[key].wristTwist = null;
     }
 }
 
@@ -4477,6 +4478,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         if (rLower) rLower.quaternion.slerp(neutralQuat, factor * 0.3);
         ikPlaneState.right.twistFlip = false;
         ikPlaneState.right.pronation = THREE.MathUtils.lerp(ikPlaneState.right.pronation, 0, factor * 0.3);
+        ikPlaneState.right.wristTwist = null;
     }
 
     // --- Avatar Left Arm ← MediaPipe Right Body(12,14,16) + Hand(0) ---
@@ -4506,6 +4508,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         if (lLower) lLower.quaternion.slerp(neutralQuat, factor * 0.3);
         ikPlaneState.left.twistFlip = false;
         ikPlaneState.left.pronation = THREE.MathUtils.lerp(ikPlaneState.left.pronation, 0, factor * 0.3);
+        ikPlaneState.left.wristTwist = null;
     }
 
     // ============================================================
@@ -4719,7 +4722,22 @@ function applyHandOrientation(prefix, landmarks, factor, deltaTime) {
     if (state && deltaTime !== undefined) {
         const qs = qLocal.clone();
         if (qs.w < 0) qs.set(-qs.x, -qs.y, -qs.z, -qs.w);
-        const wristTwist = 2 * Math.atan2(qs.x, qs.w); // hand 본 축(±X) 기준 twist
+        let wristTwist = 2 * Math.atan2(qs.x, qs.w); // hand 본 축(±X) 기준 twist
+
+        // 연속화(unwrap): 손목 twist가 ±180° 경계에 있으면 최단 표현의 부호가
+        // 프레임마다 널뛰어 서보 적분이 자기 상쇄됨(모션 레코딩 실측) —
+        // 이전 프레임 값에 가장 가까운 표현을 선택해 부호를 안정화
+        if (state.wristTwist != null) {
+            let delta = wristTwist - state.wristTwist;
+            while (delta > Math.PI) delta -= 2 * Math.PI;
+            while (delta < -Math.PI) delta += 2 * Math.PI;
+            wristTwist = state.wristTwist + delta;
+            // 과도 누적 방지 (1바퀴 초과 시 재래핑)
+            if (wristTwist > 2 * Math.PI) wristTwist -= 2 * Math.PI;
+            else if (wristTwist < -2 * Math.PI) wristTwist += 2 * Math.PI;
+        }
+        state.wristTwist = wristTwist;
+
         const limit = Math.PI / 3; // 손목 허용 비틀림 ±60°
         const overflow = wristTwist - THREE.MathUtils.clamp(wristTwist, -limit, limit);
         const target = THREE.MathUtils.clamp(state.pronation + overflow, -2.1, 2.1);
