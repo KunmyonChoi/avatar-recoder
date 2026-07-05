@@ -4557,27 +4557,21 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     };
 
     // ============================================================
-    // 1. 입모양 (Lip Sync) - 표정과 독립적으로 동작
+    // 1. 입모양 (Lip Sync) 목표값 계산 — 적용은 놀람 처리 후 일괄 수행
     // ============================================================
 
     // 입 벌림 (あ) - jawOpen 과장 적용 (살짝 벌려도 크게 벌린 것처럼)
-    const jawOpen = exaggerate(getScore('jawOpen'), 0.03, 0.7);
-    const currentAa = expressions.getValue(presetName.Aa) ?? 0;
-    expressions.setValue(presetName.Aa, THREE.MathUtils.lerp(currentAa, jawOpen, factor));
+    let aaScore = exaggerate(getScore('jawOpen'), 0.03, 0.7);
 
     // 입 모으기 (う) - mouthPucker 사용
     const mouthPucker = getScore('mouthPucker');
     const mouthFunnel = getScore('mouthFunnel');
-    const ouScore = exaggerate(Math.max(mouthPucker, mouthFunnel * 0.7), 0.05, 0.8);
-    const currentOu = expressions.getValue(presetName.Ou) ?? 0;
-    expressions.setValue(presetName.Ou, THREE.MathUtils.lerp(currentOu, ouScore, factor));
+    let ouScore = exaggerate(Math.max(mouthPucker, mouthFunnel * 0.7), 0.05, 0.8);
 
     // 입 넓히기 (い) - mouthStretch 사용
     const mouthStretchL = getScore('mouthStretchLeft');
     const mouthStretchR = getScore('mouthStretchRight');
-    const ihScore = exaggerate((mouthStretchL + mouthStretchR) / 2, 0.05, 0.8) * 0.7;
-    const currentIh = expressions.getValue(presetName.Ih) ?? 0;
-    expressions.setValue(presetName.Ih, THREE.MathUtils.lerp(currentIh, ihScore, factor));
+    let ihScore = exaggerate((mouthStretchL + mouthStretchR) / 2, 0.05, 0.8) * 0.7;
 
     // ============================================================
     // 2. 눈 (독립적으로 동작)
@@ -4621,27 +4615,44 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     }
 
     // 놀란 입 과장: 놀람 중 입을 벌리면 Aa를 추가 증폭하고 O자(Oh) 모양을 더함
-    const currentOh = expressions.getValue(presetName.Oh);
+    let ohScore = 0;
     if (surprisedScore > 0.05) {
-        const boostedAa = Math.min(1, jawOpen * (1 + surprisedScore * 0.7));
-        expressions.setValue(presetName.Aa, THREE.MathUtils.lerp(currentAa, boostedAa, factor));
-        if (currentOh !== null) {
-            const ohScore = Math.min(0.8, jawOpen * surprisedScore * 1.2);
-            expressions.setValue(presetName.Oh, THREE.MathUtils.lerp(currentOh, ohScore, factor));
-        }
-    } else if (currentOh !== null) {
-        expressions.setValue(presetName.Oh, THREE.MathUtils.lerp(currentOh, 0, factor));
+        aaScore = Math.min(1, aaScore * (1 + surprisedScore * 0.7));
+        ohScore = Math.min(0.8, aaScore * surprisedScore * 1.2);
     }
+
+    // 입 morph 합계 정규화: 여러 viseme을 동시에 최대치로 걸면 일부 모델(특히 VRM0)의
+    // 입술 위·턱 아래 mesh가 찢어져 빈 공간/흐릿한 부분이 보임 → 합이 1을 넘으면 비례 축소
+    const mouthSum = aaScore + ouScore + ihScore + ohScore;
+    if (mouthSum > 1) {
+        const s = 1 / mouthSum;
+        aaScore *= s;
+        ouScore *= s;
+        ihScore *= s;
+        ohScore *= s;
+    }
+
+    const setMouth = (name, target) => {
+        const current = expressions.getValue(name);
+        if (current === null) return; // 모델에 없는 표정은 스킵
+        expressions.setValue(name, THREE.MathUtils.lerp(current, target, factor));
+    };
+    setMouth(presetName.Aa, aaScore);
+    setMouth(presetName.Ou, ouScore);
+    setMouth(presetName.Ih, ihScore);
+    setMouth(presetName.Oh, ohScore);
 
     // ============================================================
     // 3. 표정 (감정) - 입모양(lip sync)을 완전히 덮지 않는 선에서 과장
     // ============================================================
 
-    // 웃음 - 임계값을 낮추고 상한을 올려 잘 웃는 캐릭터로
+    // 웃음 - 임계값을 낮추고 상한을 올려 잘 웃는 캐릭터로.
+    // 단, 입을 크게 벌릴수록 감쇠 — 웃음 morph가 입 벌림 morph와 중첩되면
+    // 일부 모델에서 mesh가 깨지므로 (입모양 우선)
     const smileL = getScore('mouthSmileLeft');
     const smileR = getScore('mouthSmileRight');
     const smileScore = (smileL + smileR) / 2;
-    const happyScore = smileScore > 0.2 ? Math.min(smileScore * 0.8, 0.8) : 0;
+    const happyScore = (smileScore > 0.2 ? Math.min(smileScore * 0.8, 0.8) : 0) * (1 - aaScore * 0.5);
     const currentHappy = expressions.getValue(presetName.Happy) ?? 0;
     expressions.setValue(presetName.Happy, THREE.MathUtils.lerp(currentHappy, happyScore, factor));
 
