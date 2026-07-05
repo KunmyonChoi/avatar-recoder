@@ -4584,25 +4584,53 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     // ============================================================
 
     // 눈 깜빡임 - deadzone을 높여 뜬 눈은 또렷하게, 감는 동작은 빠르게 완결
-    const blinkL = exaggerate(getScore('eyeBlinkLeft'), 0.2, 0.7);
-    const blinkR = exaggerate(getScore('eyeBlinkRight'), 0.2, 0.7);
+    // 미러 모드: 사용자 오른눈 → 아바타 왼눈 (팔/손과 동일한 좌우 반전 — 윙크 방향 일치)
+    let blinkL = exaggerate(getScore('eyeBlinkRight'), 0.2, 0.7);
+    let blinkR = exaggerate(getScore('eyeBlinkLeft'), 0.2, 0.7);
     const currentBlinkL = expressions.getValue(presetName.BlinkLeft) ?? 0;
     const currentBlinkR = expressions.getValue(presetName.BlinkRight) ?? 0;
 
-    // 눈 찡그림 (웃을 때) - eyeSquint를 깜빡임에 더해줌 (완전히 감지 않도록 제한)
-    const eyeSquintL = getScore('eyeSquintLeft');
-    const eyeSquintR = getScore('eyeSquintRight');
-    const squintBlinkL = Math.min(blinkL + eyeSquintL * 0.4, 0.9);
-    const squintBlinkR = Math.min(blinkR + eyeSquintR * 0.4, 0.9);
+    // 윙크 분리: 좌우 깜빡임 차이가 크면(한쪽 눈 윙크) 크로스토크를 제거해
+    // 감는 쪽은 완전히 감고 뜬 쪽은 완전히 뜨게
+    const winkStrength = THREE.MathUtils.clamp((Math.abs(blinkL - blinkR) - 0.2) / 0.3, 0, 1);
+    if (winkStrength > 0) {
+        if (blinkL > blinkR) {
+            blinkL = THREE.MathUtils.lerp(blinkL, 1, winkStrength);
+            blinkR = THREE.MathUtils.lerp(blinkR, 0, winkStrength);
+        } else {
+            blinkR = THREE.MathUtils.lerp(blinkR, 1, winkStrength);
+            blinkL = THREE.MathUtils.lerp(blinkL, 0, winkStrength);
+        }
+    }
+
+    // 눈 찡그림 (웃을 때) - eyeSquint를 깜빡임에 더해줌 (좌우 반전 매핑,
+    // 완전히 감지 않도록 제한하되 윙크 중에는 분리 결과를 침범하지 않음)
+    const eyeSquintL = getScore('eyeSquintRight') * (1 - winkStrength);
+    const eyeSquintR = getScore('eyeSquintLeft') * (1 - winkStrength);
+    const squintBlinkL = Math.max(blinkL, Math.min(blinkL + eyeSquintL * 0.4, 0.9));
+    const squintBlinkR = Math.max(blinkR, Math.min(blinkR + eyeSquintR * 0.4, 0.9));
     expressions.setValue(presetName.BlinkLeft, THREE.MathUtils.lerp(currentBlinkL, squintBlinkL, factor));
     expressions.setValue(presetName.BlinkRight, THREE.MathUtils.lerp(currentBlinkR, squintBlinkR, factor));
 
     // 놀람 (눈 크게 뜨기) - 모델에 Surprised 표정이 있을 때만 적용
     const eyeWide = (getScore('eyeWideLeft') + getScore('eyeWideRight')) / 2;
+    const surprisedScore = eyeWide > 0.25 ? exaggerate(eyeWide, 0.25, 0.8) * 0.8 : 0;
     const currentSurprised = expressions.getValue(presetName.Surprised);
     if (currentSurprised !== null) {
-        const surprisedScore = eyeWide > 0.25 ? exaggerate(eyeWide, 0.25, 0.8) * 0.8 : 0;
         expressions.setValue(presetName.Surprised, THREE.MathUtils.lerp(currentSurprised, surprisedScore, factor));
+    }
+
+    // 놀란 입 과장: 놀람 중 입을 벌리면 Aa를 추가 증폭하고 O자(Oh) 모양을 더함
+    const currentOh = expressions.getValue(presetName.Oh);
+    if (surprisedScore > 0.05) {
+        const boostedAa = Math.min(1, jawOpen * (1 + surprisedScore * 0.7));
+        expressions.setValue(presetName.Aa, THREE.MathUtils.lerp(currentAa, boostedAa, factor));
+        if (currentOh !== null) {
+            const ohScore = Math.min(0.8, jawOpen * surprisedScore * 1.2);
+            expressions.setValue(presetName.Oh, THREE.MathUtils.lerp(currentOh, ohScore, factor));
+        }
+    } else if (currentOh !== null) {
+        expressions.setValue(presetName.Oh, THREE.MathUtils.lerp(currentOh, 0, factor));
     }
 
     // ============================================================
