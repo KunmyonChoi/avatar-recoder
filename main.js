@@ -1970,16 +1970,31 @@ async function init() {
     updateDevOptions();
 
     // 아바타 드롭다운
-    const avatarDropdown = document.getElementById('avatar-select-dropdown');
-    if (avatarDropdown) {
-        avatarDropdown.addEventListener('change', async () => {
-            const url = avatarDropdown.value;
+    // 아바타 선택 (라디오식 버튼 — Size/Pose/View 그룹과 동일한 스타일)
+    const avatarModelGroup = document.getElementById('avatar-model-group');
+    const syncAvatarModelButtons = () => {
+        if (!avatarModelGroup) return;
+        avatarModelGroup.querySelectorAll('[data-avatar-model]').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.avatarModel === currentAvatarUrl);
+        });
+    };
+    const setAvatarModelButtonsDisabled = (disabled) => {
+        if (!avatarModelGroup) return;
+        avatarModelGroup.querySelectorAll('[data-avatar-model]').forEach(btn => {
+            btn.disabled = disabled;
+        });
+    };
+    if (avatarModelGroup) {
+        avatarModelGroup.addEventListener('click', async (e) => {
+            const btn = e.target.closest('[data-avatar-model]');
+            if (!btn) return;
+            const url = btn.dataset.avatarModel;
             if (isAvatarLoading || currentAvatarUrl === url) return;
-            avatarDropdown.disabled = true;
+            setAvatarModelButtonsDisabled(true);
             await switchAvatar(url);
-            avatarDropdown.disabled = false;
-            // 로드 실패 시 이전 값으로 복원
-            avatarDropdown.value = currentAvatarUrl;
+            setAvatarModelButtonsDisabled(false);
+            // 로드 실패 시에도 currentAvatarUrl 기준으로 active 상태 복원
+            syncAvatarModelButtons();
         });
     }
 
@@ -2000,7 +2015,7 @@ async function init() {
             if (customAvatarBlobUrl) URL.revokeObjectURL(customAvatarBlobUrl);
             customAvatarBlobUrl = URL.createObjectURL(file);
 
-            if (avatarDropdown) avatarDropdown.disabled = true;
+            setAvatarModelButtonsDisabled(true);
             loadCustomBtn.disabled = true;
 
             const prevUrl = currentAvatarUrl;
@@ -2008,26 +2023,28 @@ async function init() {
             await switchAvatar(customAvatarBlobUrl);
 
             loadCustomBtn.disabled = false;
-            if (avatarDropdown) avatarDropdown.disabled = false;
+            setAvatarModelButtonsDisabled(false);
 
             if (currentAvatarUrl === customAvatarBlobUrl) {
-                // 드롭다운에 커스텀 옵션 추가 또는 갱신
-                let customOpt = avatarDropdown?.querySelector('option[data-custom]');
-                if (!customOpt && avatarDropdown) {
-                    customOpt = document.createElement('option');
-                    customOpt.dataset.custom = '1';
-                    avatarDropdown.appendChild(customOpt);
+                // 커스텀 아바타 버튼 추가 또는 갱신 (라디오 그룹에 합류)
+                let customBtn = avatarModelGroup?.querySelector('button[data-custom]');
+                if (!customBtn && avatarModelGroup) {
+                    customBtn = document.createElement('button');
+                    customBtn.className = 'option-btn';
+                    customBtn.dataset.custom = '1';
+                    avatarModelGroup.appendChild(customBtn);
                 }
-                if (customOpt) {
-                    customOpt.value = customAvatarBlobUrl;
-                    customOpt.textContent = `★ ${file.name.replace(/\.(vrm|glb)$/i, '')}`;
-                    if (avatarDropdown) avatarDropdown.value = customAvatarBlobUrl;
+                if (customBtn) {
+                    customBtn.dataset.avatarModel = customAvatarBlobUrl;
+                    const name = file.name.replace(/\.(vrm|glb)$/i, '');
+                    customBtn.textContent = `★ ${name.length > 10 ? name.slice(0, 10) + '…' : name}`;
+                    customBtn.title = name;
                 }
                 loadCustomBtn.textContent = 'Load VRM';
             } else {
                 currentAvatarUrl = prevUrl;
-                if (avatarDropdown) avatarDropdown.value = prevUrl;
             }
+            syncAvatarModelButtons();
             avatarFileInput.value = '';
         });
     }

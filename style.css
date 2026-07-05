@@ -173,33 +173,6 @@ body.debug-view #scene-wrapper {
   align-items: center;
 }
 
-#controls #avatar-select-dropdown {
-  height: 56px;
-  padding: 4px 8px;
-  font-size: 13px;
-  background: rgba(255, 255, 255, 0.15);
-  color: white;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 6px;
-  cursor: pointer;
-  outline: none;
-  min-width: 80px;
-}
-
-#controls #avatar-select-dropdown:hover {
-  background: rgba(255, 255, 255, 0.25);
-}
-
-#controls #avatar-select-dropdown option {
-  background: #333;
-  color: white;
-}
-
-#controls #avatar-select-dropdown:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 #controls #load-custom-avatar {
   min-width: 58px;
   line-height: 1.3;
@@ -752,24 +725,6 @@ body.dialogue-enabled.input-typing #dialogue-input-container {
 
 .avatar-controls:hover .avatar-options {
   display: block;
-}
-
-.avatar-options #avatar-select-dropdown {
-  width: 100%;
-  height: 32px;
-  padding: 4px 6px;
-  font-size: 12px;
-  background: rgba(255, 255, 255, 0.15);
-  color: white;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 6px;
-  cursor: pointer;
-  outline: none;
-}
-
-.avatar-options #avatar-select-dropdown option {
-  background: #333;
-  color: white;
 }
 
 .avatar-options #load-custom-avatar {

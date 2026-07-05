@@ -184,11 +184,10 @@
             <button class="option-btn" id="orbit-controls-on">ON</button>
             <button class="option-btn active" id="orbit-controls-off">OFF</button>
           </div>
-          <div class="option-group">
-            <select id="avatar-select-dropdown" title="아바타 선택">
-              <option value="./avatar.vrm">♀ Female</option>
-              <option value="./avatar-male.glb">♂ Male</option>
-            </select>
+          <div class="option-group" id="avatar-model-group">
+            <span class="option-label">Avatar</span>
+            <button class="option-btn active" data-avatar-model="./avatar.vrm">♀ Female</button>
+            <button class="option-btn" data-avatar-model="./avatar-male.glb">♂ Male</button>
           </div>
           <div class="option-group">
             <button id="load-custom-avatar" title="로컬 VRM 파일 불러오기">Load VRM</button>
