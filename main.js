@@ -217,9 +217,9 @@ let audioMixValue = 50;              // 0 = Mic only, 100 = Tab only
 let leftArmActive = false;
 let rightArmActive = false;
 
-// --- Leg Activity State (for hysteresis, MediaPipe 기준 좌/우) ---
-let leftLegActive = false;
-let rightLegActive = false;
+// --- Body Sway Baseline (어깨 기준 몸 이동 추정, 이미지 단위) ---
+// 느리게 적응해 순간적 sway만 아바타에 반영하고 장기적 위치 변화는 중립화
+let swayBaseline = null;
 
 // --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
 // tasks-vision handedness 라벨은 해부학적 기준 → 미러 모드에서 좌우 스왑
@@ -3600,9 +3600,19 @@ async function loadAvatar(url = './avatar.vrm') {
         currentVrm = vrm;
         currentAvatarUrl = url;
 
-        // Hips rest 높이 저장 (로드 직후 = rest 자세 보장, hips 상하 이동의 기준점)
+        // Hips rest 위치 저장 (로드 직후 = rest 자세 보장, hips 이동의 기준점)
         const hipsBone = vrm.humanoid.getNormalizedBoneNode('hips');
-        if (hipsBone) vrm.scene.userData.hipsRestY = hipsBone.position.y;
+        if (hipsBone) vrm.scene.userData.hipsRestPos = hipsBone.position.clone();
+
+        // 발 고정(pinning)용 rest 위치 — vrm.scene 로컬 기준이라 앵커로 scene을 옮겨도 유효
+        vrm.scene.updateWorldMatrix(true, true);
+        for (const side of ['left', 'right']) {
+            const foot = vrm.humanoid.getNormalizedBoneNode(side + 'Foot');
+            if (foot) {
+                const w = foot.getWorldPosition(new THREE.Vector3());
+                vrm.scene.userData[side + 'FootRestLocal'] = vrm.scene.worldToLocal(w);
+            }
+        }
         console.log("Avatar loaded:", url);
     } catch (err) {
         console.error("VRM load error:", err);
@@ -3806,21 +3816,18 @@ function resetPose(deltaTime) {
         if (bone) bone.quaternion.slerp(neutralLower, factor);
     }
 
-    // Hips 회전/높이 복귀
+    // Hips 회전/위치 복귀
     const hips = currentVrm.humanoid.getNormalizedBoneNode('hips');
     if (hips) {
         hips.quaternion.slerp(neutralLower, factor);
-        const restY = currentVrm.scene.userData.hipsRestY;
-        if (restY !== undefined) {
-            hips.position.y = THREE.MathUtils.lerp(hips.position.y, restY, factor);
-        }
+        const restPos = currentVrm.scene.userData.hipsRestPos;
+        if (restPos) hips.position.lerp(restPos, factor);
     }
 
     // 활성 상태 리셋
     leftArmActive = false;
     rightArmActive = false;
-    leftLegActive = false;
-    rightLegActive = false;
+    swayBaseline = null;
 }
 
 // --- Debug 3D ---
@@ -3982,11 +3989,15 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     if (hips && landmarks) {
         const mpLHip = landmarks[23];
         const mpRHip = landmarks[24];
+        const hipVis = Math.min(mpLHip.visibility ?? 1.0, mpRHip.visibility ?? 1.0);
 
-        const rollH = (mpRHip.y - mpLHip.y) * 1.2 * (isVRM0 ? -1 : 1);
-        const yawH = (mpRHip.z - mpLHip.z) * 1.0;
-
-        hipsQuat.setFromEuler(new THREE.Euler(0, yawH, rollH, 'XYZ'));
+        // 상반신 프레이밍에서 hip이 프레임 밖이면 노이즈 회전 방지 — 중립 유지
+        // (hipsQuat이 identity로 남아 spine이 어깨 회전 전체를 받음)
+        if (hipVis > 0.5) {
+            const rollH = (mpRHip.y - mpLHip.y) * 1.2 * (isVRM0 ? -1 : 1);
+            const yawH = (mpRHip.z - mpLHip.z) * 1.0;
+            hipsQuat.setFromEuler(new THREE.Euler(0, yawH, rollH, 'XYZ'));
+        }
         hips.quaternion.slerp(hipsQuat, factor * 0.5);
     }
 
@@ -4088,129 +4099,84 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     }
 
     // ============================================================
-    // 다리 트래킹 (hip→knee→ankle Two-Bone IK)
-    // 다리 rest 방향은 -Y라 VRM 버전과 무관하게 boneAxis 동일 (Y축은 rotateVRM0 영향 없음)
+    // Hips 이동 (몸 좌우 sway / 상하 bob) — 어깨 기준 추정
+    // 어깨는 상반신 프레이밍에서도 항상 보이므로 전신 촬영이 필요 없음.
+    // 느린 적응 baseline 대비 오프셋으로 순간적 몸 움직임만 아바타에 반영
     // ============================================================
-    const rUpperLeg = currentVrm.humanoid.getNormalizedBoneNode('rightUpperLeg');
-    const rLowerLeg = currentVrm.humanoid.getNormalizedBoneNode('rightLowerLeg');
-    const rFoot = currentVrm.humanoid.getNormalizedBoneNode('rightFoot');
+    const hipsRestPos = currentVrm.scene.userData.hipsRestPos;
+    if (hips && hipsRestPos && landmarks) {
+        const shoulderVis = Math.min(landmarks[11].visibility ?? 1.0, landmarks[12].visibility ?? 1.0);
+        const aspect = VIDEO_WIDTH / VIDEO_HEIGHT;
 
-    const lUpperLeg = currentVrm.humanoid.getNormalizedBoneNode('leftUpperLeg');
-    const lLowerLeg = currentVrm.humanoid.getNormalizedBoneNode('leftLowerLeg');
-    const lFoot = currentVrm.humanoid.getNormalizedBoneNode('leftFoot');
+        if (shoulderVis > 0.5) {
+            // 이미지 단위 (x는 aspect 보정으로 y와 등방화)
+            const refX = (landmarks[11].x + landmarks[12].x) / 2 * aspect;
+            const refY = (landmarks[11].y + landmarks[12].y) / 2;
 
-    // 발목 visibility 기준 hysteresis (앉은 자세 등 다리가 안 보이면 곧게 선 자세 유지)
-    const leftAnkleVis = landmarks[27].visibility ?? 1.0;
-    const rightAnkleVis = landmarks[28].visibility ?? 1.0;
-
-    if (!leftLegActive && leftAnkleVis > VIS_THRESHOLD_ON) {
-        leftLegActive = true;
-    } else if (leftLegActive && leftAnkleVis < VIS_THRESHOLD_OFF) {
-        leftLegActive = false;
-    }
-
-    if (!rightLegActive && rightAnkleVis > VIS_THRESHOLD_ON) {
-        rightLegActive = true;
-    } else if (rightLegActive && rightAnkleVis < VIS_THRESHOLD_OFF) {
-        rightLegActive = false;
-    }
-
-    const legBoneAxis = new THREE.Vector3(0, -1, 0);
-    const straightLeg = new THREE.Quaternion();
-
-    // --- Avatar Right Leg ← MediaPipe Left Body(23,25,27) (미러링) ---
-    if (rUpperLeg && rLowerLeg && rFoot && leftLegActive) {
-        const upperLen = rLowerLeg.position.length();
-        const lowerLen = rFoot.position.length();
-
-        const mpHip = getPos(23);
-        const mpKnee = getPos(25);
-        const mpAnkle = getPos(27);
-
-        const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
-        const scale = (upperLen + lowerLen) / mpLegLen;
-
-        const target = new THREE.Vector3().subVectors(mpAnkle, mpHip).multiplyScalar(scale);
-        const pole = new THREE.Vector3().subVectors(mpKnee, mpHip).multiplyScalar(scale);
-
-        solveTwoBoneIK(rUpperLeg, rLowerLeg, upperLen, lowerLen, target, pole, legBoneAxis.clone(), deltaTime, ikPlaneState.rightLeg);
-    } else if (rUpperLeg && !leftLegActive) {
-        // 곧게 선 자세로 복귀
-        rUpperLeg.quaternion.slerp(straightLeg, factor * 0.3);
-        if (rLowerLeg) rLowerLeg.quaternion.slerp(straightLeg, factor * 0.3);
-    }
-
-    // --- Avatar Left Leg ← MediaPipe Right Body(24,26,28) (미러링) ---
-    if (lUpperLeg && lLowerLeg && lFoot && rightLegActive) {
-        const upperLen = lLowerLeg.position.length();
-        const lowerLen = lFoot.position.length();
-
-        const mpHip = getPos(24);
-        const mpKnee = getPos(26);
-        const mpAnkle = getPos(28);
-
-        const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
-        const scale = (upperLen + lowerLen) / mpLegLen;
-
-        const target = new THREE.Vector3().subVectors(mpAnkle, mpHip).multiplyScalar(scale);
-        const pole = new THREE.Vector3().subVectors(mpKnee, mpHip).multiplyScalar(scale);
-
-        solveTwoBoneIK(lUpperLeg, lLowerLeg, upperLen, lowerLen, target, pole, legBoneAxis.clone(), deltaTime, ikPlaneState.leftLeg);
-    } else if (lUpperLeg && !rightLegActive) {
-        // 곧게 선 자세로 복귀
-        lUpperLeg.quaternion.slerp(straightLeg, factor * 0.3);
-        if (lLowerLeg) lLowerLeg.quaternion.slerp(straightLeg, factor * 0.3);
-    }
-
-    // ============================================================
-    // Hips 상하 이동 (앉기/스쿼트 시 발 착지 유지)
-    // World landmark는 hip 원점 기준이라 절대 위치가 없으므로,
-    // 다리의 수직 신장 비율(hip-ankle 높이차 / 다리 길이)로 hips 하강량을 역산
-    // ============================================================
-    if (hips && currentVrm.scene.userData.hipsRestY !== undefined) {
-        const restY = currentVrm.scene.userData.hipsRestY;
-        let targetY = restY;
-
-        // 활성 다리별 하강량 계산 후 최솟값 사용 (한쪽 다리가 곧게 서 있으면 hips 유지)
-        let minDrop = null;
-
-        if (leftLegActive && rLowerLeg && rFoot) {
-            const legLen = rLowerLeg.position.length() + rFoot.position.length();
-            const mpHip = getPos(23);
-            const mpKnee = getPos(25);
-            const mpAnkle = getPos(27);
-            const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
-            if (mpLegLen > 1e-6) {
-                const extentRatio = (mpHip.y - mpAnkle.y) / mpLegLen; // 1 = 곧게 선 상태
-                const bend = THREE.MathUtils.clamp(1 - extentRatio, 0, 1);
-                const drop = Math.max(0, bend - 0.08) * legLen; // 직립 시 잔여 오차 deadzone
-                minDrop = minDrop === null ? drop : Math.min(minDrop, drop);
+            if (!swayBaseline) {
+                swayBaseline = { x: refX, y: refY };
+            } else {
+                // 느린 적응 (τ≈10s): 순간적 sway는 표현, 장기적 위치 변화는 중립화
+                const alpha = 1 - Math.exp(-deltaTime / 10);
+                swayBaseline.x += (refX - swayBaseline.x) * alpha;
+                swayBaseline.y += (refY - swayBaseline.y) * alpha;
             }
-        }
 
-        if (rightLegActive && lLowerLeg && lFoot) {
-            const legLen = lLowerLeg.position.length() + lFoot.position.length();
-            const mpHip = getPos(24);
-            const mpKnee = getPos(26);
-            const mpAnkle = getPos(28);
-            const mpLegLen = mpHip.distanceTo(mpKnee) + mpKnee.distanceTo(mpAnkle);
-            if (mpLegLen > 1e-6) {
-                const extentRatio = (mpHip.y - mpAnkle.y) / mpLegLen;
-                const bend = THREE.MathUtils.clamp(1 - extentRatio, 0, 1);
-                const drop = Math.max(0, bend - 0.08) * legLen;
-                minDrop = minDrop === null ? drop : Math.min(minDrop, drop);
+            // 이미지 단위 → 미터: 영상 속 어깨 폭과 아바타 어깨 폭(양쪽 upperArm 거리)의 비율
+            const shoulderWidthImg = Math.abs(landmarks[11].x - landmarks[12].x) * aspect;
+            let scale = 0;
+            if (rUpper && lUpper && shoulderWidthImg > 1e-4) {
+                const rW = rUpper.getWorldPosition(new THREE.Vector3());
+                const lW = lUpper.getWorldPosition(new THREE.Vector3());
+                scale = rW.distanceTo(lW) / shoulderWidthImg;
             }
-        }
 
-        if (minDrop !== null) {
-            const legLenRef = (rLowerLeg && rFoot)
-                ? rLowerLeg.position.length() + rFoot.position.length()
-                : 0.8;
-            targetY = restY - Math.min(minDrop, legLenRef * 0.55);
-        }
+            // 미러링(-x), 이미지 y(아래+) → 월드 y(위+)
+            const offX = THREE.MathUtils.clamp(-(refX - swayBaseline.x) * scale, -0.25, 0.25);
+            const offY = THREE.MathUtils.clamp(-(refY - swayBaseline.y) * scale, -0.3, 0.1);
 
-        hips.position.y = THREE.MathUtils.lerp(hips.position.y, targetY, factor * 0.5);
+            // rig 로컬 x는 VRM0(scene 180°Y 회전)에서 월드와 반대
+            const xDir = isVRM0 ? -1 : 1;
+            hips.position.x = THREE.MathUtils.lerp(hips.position.x, hipsRestPos.x + offX * xDir, factor * 0.5);
+            hips.position.y = THREE.MathUtils.lerp(hips.position.y, hipsRestPos.y + offY, factor * 0.5);
+        } else {
+            hips.position.lerp(hipsRestPos, factor * 0.3);
+        }
     }
+
+    // ============================================================
+    // 다리: 발을 지면 rest 위치에 고정하는 Two-Bone IK
+    // hips가 이동/회전하면 다리가 자연스럽게 굽혀져 발 착지 유지 (VTuber 스타일)
+    // ============================================================
+    solvePinnedFootLeg('right', deltaTime);
+    solvePinnedFootLeg('left', deltaTime);
+}
+
+// 발 고정 다리 IK: hips 현재 위치에서 로드 시 저장한 발 rest 위치로 다리를 풀어줌
+// 다리 rest 방향은 -Y라 VRM 버전과 무관하게 boneAxis 동일 (Y축은 rotateVRM0 영향 없음)
+function solvePinnedFootLeg(side, deltaTime) {
+    if (!currentVrm) return;
+
+    const upper = currentVrm.humanoid.getNormalizedBoneNode(side + 'UpperLeg');
+    const lower = currentVrm.humanoid.getNormalizedBoneNode(side + 'LowerLeg');
+    const foot = currentVrm.humanoid.getNormalizedBoneNode(side + 'Foot');
+    const footRestLocal = currentVrm.scene.userData[side + 'FootRestLocal'];
+    if (!upper || !lower || !foot || !footRestLocal) return;
+
+    const upperLen = lower.position.length();
+    const lowerLen = foot.position.length();
+
+    currentVrm.scene.updateWorldMatrix(true, false);
+    const footTarget = currentVrm.scene.localToWorld(footRestLocal.clone());
+    const hipJoint = upper.getWorldPosition(new THREE.Vector3());
+    const target = footTarget.sub(hipJoint);
+
+    // 무릎은 앞(+Z, 카메라 방향)으로 굽힘: pole은 타깃 중간점에 전방 오프셋
+    const pole = target.clone().multiplyScalar(0.5)
+        .addScaledVector(new THREE.Vector3(0, 0, 1), (upperLen + lowerLen) * 0.4);
+
+    solveTwoBoneIK(upper, lower, upperLen, lowerLen, target, pole,
+        new THREE.Vector3(0, -1, 0), deltaTime, ikPlaneState[side + 'Leg']);
 }
 
 // ============================================================
