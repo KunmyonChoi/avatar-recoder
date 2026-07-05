@@ -4533,6 +4533,16 @@ function applyThumbCurl(prefix, curl, factor) {
 // ============================================================
 // 표정 처리
 // ============================================================
+// VTuber 용도로 표정을 실측보다 과장해서 표현:
+// deadzone 이하의 노이즈는 무시하고, 중간 강도를 curve(<1)로 끌어올린 뒤
+// EXPRESSION_EXAGGERATION 배율을 곱해 0..1로 클램프
+const EXPRESSION_EXAGGERATION = 1.35; // 전체 과장 배율 (1.0 = 실측 그대로)
+
+function exaggerate(score, deadzone = 0.05, curve = 0.75) {
+    const s = Math.max(0, (score - deadzone) / (1 - deadzone));
+    return THREE.MathUtils.clamp(Math.pow(s, curve) * EXPRESSION_EXAGGERATION, 0, 1);
+}
+
 function applyBlendshapes(blendShapesData, deltaTime) {
     if (!currentVrm) return;
 
@@ -4550,65 +4560,69 @@ function applyBlendshapes(blendShapesData, deltaTime) {
     // 1. 입모양 (Lip Sync) - 표정과 독립적으로 동작
     // ============================================================
 
-    // 입 벌림 (あ) - jawOpen을 직접 사용
-    const jawOpen = getScore('jawOpen');
+    // 입 벌림 (あ) - jawOpen 과장 적용 (살짝 벌려도 크게 벌린 것처럼)
+    const jawOpen = exaggerate(getScore('jawOpen'), 0.03, 0.7);
     const currentAa = expressions.getValue(presetName.Aa) ?? 0;
     expressions.setValue(presetName.Aa, THREE.MathUtils.lerp(currentAa, jawOpen, factor));
 
     // 입 모으기 (う) - mouthPucker 사용
     const mouthPucker = getScore('mouthPucker');
     const mouthFunnel = getScore('mouthFunnel');
-    const ouScore = Math.max(mouthPucker, mouthFunnel * 0.7);
+    const ouScore = exaggerate(Math.max(mouthPucker, mouthFunnel * 0.7), 0.05, 0.8);
     const currentOu = expressions.getValue(presetName.Ou) ?? 0;
     expressions.setValue(presetName.Ou, THREE.MathUtils.lerp(currentOu, ouScore, factor));
 
     // 입 넓히기 (い) - mouthStretch 사용
     const mouthStretchL = getScore('mouthStretchLeft');
     const mouthStretchR = getScore('mouthStretchRight');
-    const ihScore = (mouthStretchL + mouthStretchR) / 2;
+    const ihScore = exaggerate((mouthStretchL + mouthStretchR) / 2, 0.05, 0.8) * 0.7;
     const currentIh = expressions.getValue(presetName.Ih) ?? 0;
-    expressions.setValue(presetName.Ih, THREE.MathUtils.lerp(currentIh, ihScore * 0.5, factor));
+    expressions.setValue(presetName.Ih, THREE.MathUtils.lerp(currentIh, ihScore, factor));
 
     // ============================================================
     // 2. 눈 (독립적으로 동작)
     // ============================================================
 
-    // 눈 깜빡임 - 직접 제어
-    const blinkL = getScore('eyeBlinkLeft');
-    const blinkR = getScore('eyeBlinkRight');
+    // 눈 깜빡임 - deadzone을 높여 뜬 눈은 또렷하게, 감는 동작은 빠르게 완결
+    const blinkL = exaggerate(getScore('eyeBlinkLeft'), 0.2, 0.7);
+    const blinkR = exaggerate(getScore('eyeBlinkRight'), 0.2, 0.7);
     const currentBlinkL = expressions.getValue(presetName.BlinkLeft) ?? 0;
     const currentBlinkR = expressions.getValue(presetName.BlinkRight) ?? 0;
-    expressions.setValue(presetName.BlinkLeft, THREE.MathUtils.lerp(currentBlinkL, blinkL, factor));
-    expressions.setValue(presetName.BlinkRight, THREE.MathUtils.lerp(currentBlinkR, blinkR, factor));
 
-    // 눈 찡그림 (웃을 때) - eyeSquint 사용
+    // 눈 찡그림 (웃을 때) - eyeSquint를 깜빡임에 더해줌 (완전히 감지 않도록 제한)
     const eyeSquintL = getScore('eyeSquintLeft');
     const eyeSquintR = getScore('eyeSquintRight');
-    // 눈 찡그림은 눈 깜빡임에 약간 더해줌 (완전히 감지 않도록 제한)
-    const squintBlinkL = Math.min(blinkL + eyeSquintL * 0.3, 0.8);
-    const squintBlinkR = Math.min(blinkR + eyeSquintR * 0.3, 0.8);
+    const squintBlinkL = Math.min(blinkL + eyeSquintL * 0.4, 0.9);
+    const squintBlinkR = Math.min(blinkR + eyeSquintR * 0.4, 0.9);
     expressions.setValue(presetName.BlinkLeft, THREE.MathUtils.lerp(currentBlinkL, squintBlinkL, factor));
     expressions.setValue(presetName.BlinkRight, THREE.MathUtils.lerp(currentBlinkR, squintBlinkR, factor));
 
+    // 놀람 (눈 크게 뜨기) - 모델에 Surprised 표정이 있을 때만 적용
+    const eyeWide = (getScore('eyeWideLeft') + getScore('eyeWideRight')) / 2;
+    const currentSurprised = expressions.getValue(presetName.Surprised);
+    if (currentSurprised !== null) {
+        const surprisedScore = eyeWide > 0.25 ? exaggerate(eyeWide, 0.25, 0.8) * 0.8 : 0;
+        expressions.setValue(presetName.Surprised, THREE.MathUtils.lerp(currentSurprised, surprisedScore, factor));
+    }
+
     // ============================================================
-    // 3. 표정 (감정) - 입모양에 영향 주지 않도록 약하게 적용
+    // 3. 표정 (감정) - 입모양(lip sync)을 완전히 덮지 않는 선에서 과장
     // ============================================================
 
-    // 웃음 - Happy 표정을 약하게 적용 (입모양 override 방지)
+    // 웃음 - 임계값을 낮추고 상한을 올려 잘 웃는 캐릭터로
     const smileL = getScore('mouthSmileLeft');
     const smileR = getScore('mouthSmileRight');
     const smileScore = (smileL + smileR) / 2;
-    // Happy 표정은 0.3 이상일 때만, 최대 0.5까지만 적용 (입모양 우선)
-    const happyScore = smileScore > 0.3 ? Math.min(smileScore * 0.5, 0.5) : 0;
+    const happyScore = smileScore > 0.2 ? Math.min(smileScore * 0.8, 0.8) : 0;
     const currentHappy = expressions.getValue(presetName.Happy) ?? 0;
     expressions.setValue(presetName.Happy, THREE.MathUtils.lerp(currentHappy, happyScore, factor));
 
-    // 슬픔 (눈썹 올림) - 약하게 적용
+    // 슬픔 (눈썹 올림)
     const browInnerUp = getScore('browInnerUp');
     const browDownL = getScore('browDownLeft');
     const browDownR = getScore('browDownRight');
-    if (browInnerUp > 0.3) {
-        const sadScore = Math.min(browInnerUp * 0.5, 0.4);
+    if (browInnerUp > 0.25) {
+        const sadScore = Math.min(browInnerUp * 0.7, 0.6);
         const currentSad = expressions.getValue(presetName.Sad) ?? 0;
         expressions.setValue(presetName.Sad, THREE.MathUtils.lerp(currentSad, sadScore, factor));
     } else {
@@ -4618,9 +4632,9 @@ function applyBlendshapes(blendShapesData, deltaTime) {
 
     // 화남 (눈썹 찌푸림)
     const angryScore = (browDownL + browDownR) / 2;
-    if (angryScore > 0.3) {
+    if (angryScore > 0.25) {
         const currentAngry = expressions.getValue(presetName.Angry) ?? 0;
-        expressions.setValue(presetName.Angry, THREE.MathUtils.lerp(currentAngry, angryScore * 0.4, factor));
+        expressions.setValue(presetName.Angry, THREE.MathUtils.lerp(currentAngry, Math.min(angryScore * 0.6, 0.6), factor));
     } else {
         const currentAngry = expressions.getValue(presetName.Angry) ?? 0;
         expressions.setValue(presetName.Angry, THREE.MathUtils.lerp(currentAngry, 0, factor));
