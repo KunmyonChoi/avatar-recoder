@@ -251,6 +251,20 @@ let swayBaseline = null;     // 어깨 중점 (폴백 모드: 골반이 프레�
 let hipSwayBaseline = null;  // 골반 중점 (댄스 모드: hips를 직접 구동)
 let leanBaseline = null;     // 골반→어깨 기울기 각 (댄스 모드: 상체 lean 중립값)
 let lastSwayOffX = 0;        // 직전 프레임 골반 좌우 이동량(m) — roll 커플링용
+
+// --- 발 사이드 스텝: 골반이 발에서 지속적으로 멀어지면 발이 한 발씩 따라옴 ---
+const STEP_TRIGGER_DIST = 0.22; // 골반-발중심 수평 이격 임계(m)
+const STEP_SUSTAIN_TIME = 0.45; // 임계 초과 지속 시간(s) — 춤의 왕복 sway는 걸러냄
+const STEP_DURATION = 0.3;      // 한 발 이동 시간(s)
+const STEP_HEIGHT = 0.06;       // 스텝 중 발 들어올림(m)
+const STEP_COOLDOWN = 0.25;     // 스텝 간 최소 간격(s)
+const STANCE_MISMATCH = 0.08;   // 양발 오프셋 차 허용치(m) — 초과 시 뒷발 따라붙음
+let footStep = {
+    offL: 0, offR: 0,      // 발 앵커의 rest 대비 월드 x 오프셋(m)
+    liftL: 0, liftR: 0,    // 스텝 중 발 높이(m)
+    sustainT: 0, cooldownT: 0,
+    active: null           // { side, fromX, toX, t }
+};
 let danceMode = false;       // 골반 visibility hysteresis로 전환
 
 // --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
@@ -3695,6 +3709,11 @@ async function loadAvatar(url = './avatar.vrm') {
                 vrm.scene.userData[side + 'FootRestLocal'] = vrm.scene.worldToLocal(w);
             }
         }
+
+        // 사이드 스텝 상태 초기화 (새 아바타의 rest 앵커 기준으로 재시작)
+        footStep.offL = footStep.offR = footStep.liftL = footStep.liftR = 0;
+        footStep.sustainT = footStep.cooldownT = 0;
+        footStep.active = null;
         console.log("Avatar loaded:", url);
     } catch (err) {
         console.error("VRM load error:", err);
@@ -3951,6 +3970,13 @@ function resetPose(deltaTime) {
     leanBaseline = null;
     lastSwayOffX = 0;
     danceMode = false;
+
+    // 사이드 스텝 상태: 진행 중 스텝 취소, 발 앵커는 rest로 서서히 복귀
+    footStep.active = null;
+    footStep.sustainT = 0;
+    footStep.liftL = footStep.liftR = 0;
+    footStep.offL = THREE.MathUtils.lerp(footStep.offL, 0, factor);
+    footStep.offR = THREE.MathUtils.lerp(footStep.offR, 0, factor);
     for (const key of ['right', 'left', 'rightLeg', 'leftLeg']) {
         ikPlaneState[key].twistFlip = false;
         ikPlaneState[key].pronation = 0;
@@ -4634,10 +4660,60 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     // ============================================================
     // 다리: 발을 지면 rest 위치에 고정하는 Two-Bone IK
     // hips가 이동/회전하면 다리가 자연스럽게 굽혀져 발 착지 유지 (VTuber 스타일)
+    // 골반이 발에서 지속적으로 멀어지면(실제 옆걸음) 발이 한 발씩 따라오는 사이드 스텝
     // ============================================================
+    if (hips && hipsRestPos) updateFootStepping(hips, hipsRestPos, isVRM0, deltaTime);
     currentVrm.scene.updateWorldMatrix(true, false);
     solvePinnedFootLeg('right', deltaTime);
     solvePinnedFootLeg('left', deltaTime);
+}
+
+// 사이드 스텝 상태 머신: 골반-발중심 이격이 임계를 '지속' 초과하면(왕복 sway 제외)
+// 이동 방향 쪽 발부터 smoothstep으로 이동 + sin 곡선으로 들어올림.
+// 한 발 이동 후 스탠스가 어긋나면 뒷발이 따라붙음. baseline이 골반을 중립으로
+// 되돌리면 반대 방향 이격이 생겨 발도 자동으로 되돌아옴 (자기 수렴).
+function updateFootStepping(hips, hipsRestPos, isVRM0, deltaTime) {
+    const xDir = isVRM0 ? -1 : 1;
+    const hipsOffX = (hips.position.x - hipsRestPos.x) * xDir; // 월드 기준 골반 이동량
+
+    const fs = footStep;
+    if (fs.active) {
+        fs.active.t += deltaTime;
+        const p = Math.min(fs.active.t / STEP_DURATION, 1);
+        const s = p * p * (3 - 2 * p); // smoothstep
+        const off = THREE.MathUtils.lerp(fs.active.fromX, fs.active.toX, s);
+        const lift = STEP_HEIGHT * Math.sin(Math.PI * p);
+        if (fs.active.side === 'left') { fs.offL = off; fs.liftL = lift; }
+        else { fs.offR = off; fs.liftR = lift; }
+        if (p >= 1) {
+            if (fs.active.side === 'left') fs.liftL = 0; else fs.liftR = 0;
+            fs.active = null;
+            fs.cooldownT = STEP_COOLDOWN;
+            fs.sustainT = 0;
+        }
+        return;
+    }
+
+    fs.cooldownT = Math.max(0, fs.cooldownT - deltaTime);
+    const feetMid = (fs.offL + fs.offR) / 2;
+    const gap = hipsOffX - feetMid;
+
+    if (Math.abs(gap) > STEP_TRIGGER_DIST) fs.sustainT += deltaTime;
+    else fs.sustainT = 0;
+
+    if (fs.cooldownT > 0) return;
+
+    if (fs.sustainT > STEP_SUSTAIN_TIME) {
+        // 이동 방향 쪽 발부터 (아바타 왼발이 월드 +X 쪽)
+        const side = gap > 0 ? 'left' : 'right';
+        fs.active = { side, fromX: side === 'left' ? fs.offL : fs.offR, toX: hipsOffX, t: 0 };
+    } else if (Math.abs(fs.offL - fs.offR) > STANCE_MISMATCH) {
+        // 스탠스가 어긋나 있으면 골반에서 먼 발(뒷발)이 따라붙음
+        const dL = Math.abs(fs.offL - hipsOffX);
+        const dR = Math.abs(fs.offR - hipsOffX);
+        const side = dL > dR ? 'left' : 'right';
+        fs.active = { side, fromX: side === 'left' ? fs.offL : fs.offR, toX: hipsOffX, t: 0 };
+    }
 }
 
 // 발 고정 다리 IK: hips 현재 위치에서 로드 시 저장한 발 rest 위치로 다리를 풀어줌
@@ -4654,8 +4730,14 @@ function solvePinnedFootLeg(side, deltaTime) {
     const upperLen = lower.position.length();
     const lowerLen = foot.position.length();
 
+    // 사이드 스텝 오프셋/들어올림 반영 (scene-local x는 VRM0에서 월드와 반대)
+    const isVRM0Local = currentVrm.meta?.metaVersion === '0';
+    const anchorLocal = footRestLocal.clone();
+    anchorLocal.x += (side === 'left' ? footStep.offL : footStep.offR) * (isVRM0Local ? -1 : 1);
+    anchorLocal.y += side === 'left' ? footStep.liftL : footStep.liftR;
+
     // scene의 updateWorldMatrix는 호출부(applyPose)에서 프레임당 1회 수행
-    const footTarget = currentVrm.scene.localToWorld(footRestLocal.clone());
+    const footTarget = currentVrm.scene.localToWorld(anchorLocal);
     const hipJoint = upper.getWorldPosition(new THREE.Vector3());
     const target = footTarget.sub(hipJoint);
 
