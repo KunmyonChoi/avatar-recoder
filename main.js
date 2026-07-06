@@ -4003,7 +4003,11 @@ function selectDebugBone(step) {
 }
 
 function deselectDebugBone() {
-    if (boneEditControls) boneEditControls.detach();
+    if (boneEditControls) {
+        // 기즈모 조작으로 미세 비정규가 남지 않도록 해제 시 정규화
+        boneEditControls.object?.quaternion?.normalize();
+        boneEditControls.detach();
+    }
     boneEditIndex = -1;
 }
 
@@ -4185,6 +4189,16 @@ const ikPlaneState = {
 // 현상을 완화 — 방향은 즉시 따라가고 비틀림은 천천히 따라잡음.
 function slerpSwingTwist(bone, qTarget, axis, swingFactor, twistFactor) {
     const qCur = bone.quaternion;
+
+    // 방어선: 본 쿼터니언이 퇴화(zero/NaN/큰 비정규)하면 어떤 slerp로도 회복이
+    // 불가능해 영구 고착됨(실측: 팔이 T-pose에 얼어붙는 증상) — 감지 시 identity로 복구
+    const lenSq = qCur.lengthSq();
+    if (!isFinite(lenSq) || lenSq < 0.25 || lenSq > 4) {
+        qCur.identity();
+    } else if (Math.abs(lenSq - 1) > 1e-3) {
+        qCur.normalize(); // 미세 드리프트는 즉시 세척 (자기 증폭 차단)
+    }
+
     const delta = qCur.clone().invert().multiply(qTarget); // 로컬 프레임 잔여 회전
 
     // delta = swing ∘ twist 분해 (twist: axis 성분 사영)
@@ -4200,6 +4214,12 @@ function slerpSwingTwist(bone, qTarget, axis, swingFactor, twistFactor) {
     const partialSwing = new THREE.Quaternion().slerp(swing, swingFactor);
     const partialTwist = new THREE.Quaternion().slerp(twist, twistFactor);
     bone.quaternion.copy(qCur).multiply(partialSwing).multiply(partialTwist);
+    // 결과가 유한하지 않으면(목표에 NaN 유입 등) 오염 대신 이전 정규값 유지
+    if (!isFinite(bone.quaternion.lengthSq())) {
+        bone.quaternion.copy(qCur);
+    } else {
+        bone.quaternion.normalize();
+    }
 }
 
 // boneAxis는 rig 로컬(로드 시점 프레임) 기준 rest 방향.
@@ -4311,7 +4331,7 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
         // (applyHandOrientation의 서보가 갱신). postmultiply는 전완 방향은 유지하면서
         // 롤만 바꾸므로 트래킹 정확도에 영향 없음. 팔꿈치 경계의 가지 보정 덩어리도
         // 이 롤이 상쇄해 체인 전체에 비틀림이 분산됨.
-        if (planeState.pronation) {
+        if (planeState.pronation && isFinite(planeState.pronation)) {
             qLowerLocal.multiply(new THREE.Quaternion().setFromAxisAngle(boneAxis, planeState.pronation));
         }
     }
@@ -4788,12 +4808,18 @@ function applyHandOrientation(prefix, landmarks, factor, deltaTime) {
             if (wristTwist > 2 * Math.PI) wristTwist -= 2 * Math.PI;
             else if (wristTwist < -2 * Math.PI) wristTwist += 2 * Math.PI;
         }
+        // 유한성 가드: NaN이 서보 상태에 들어오면 IK 전체로 오염이 번지므로 즉시 리셋
+        if (!isFinite(wristTwist)) {
+            state.wristTwist = null;
+            return;
+        }
         state.wristTwist = wristTwist;
 
         const limit = Math.PI / 3; // 손목 허용 비틀림 ±60°
         const overflow = wristTwist - THREE.MathUtils.clamp(wristTwist, -limit, limit);
         const target = THREE.MathUtils.clamp(state.pronation + overflow, -2.1, 2.1);
         state.pronation += (target - state.pronation) * getLerpFactor(deltaTime, 4);
+        if (!isFinite(state.pronation)) state.pronation = 0;
     }
 }
 
