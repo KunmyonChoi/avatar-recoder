@@ -20,6 +20,8 @@ const VIDEO_ASPECT = VIDEO_WIDTH / VIDEO_HEIGHT;
 const LERP_SPEED = 12; // 반응 속도 (높을수록 빠름)
 const VIS_THRESHOLD_ON = 0.65;  // 활성화 임계값
 const VIS_THRESHOLD_OFF = 0.45; // 비활성화 임계값 (hysteresis)
+const DANCE_SWAY_GAIN = 1.4;    // 댄스 모드 골반 좌우 이동 증폭 (표현력)
+const DANCE_ROLL_COUPLE = 0.8;  // 골반 이동→기울기 커플링 (rad/m) — 무게이동 표현
 const DANCE_VIS_ON = 0.6;       // 골반 visibility 댄스 모드 진입 임계값
 const DANCE_VIS_OFF = 0.4;      // 댄스 모드 해제 임계값 (hysteresis)
 const BASELINE_ADAPT_SPEED = 0.1; // sway/lean baseline 적응 속도 (τ≈10s)
@@ -230,6 +232,7 @@ let swayBaseline = null;     // 어깨 중점 (폴백 모드: 골반이 프레�
 let hipSwayBaseline = null;  // 골반 중점 (댄스 모드: hips를 직접 구동)
 let leanBaseline = null;     // 골반→어깨 기울기 각 (댄스 모드: 상체 lean 중립값)
 let bowPitchSmooth = 0;      // 상체 pitch(앞으로 숙임, 인사) 스무딩 상태 (라디안)
+let lastSwayOffX = 0;        // 직전 프레임 골반 좌우 이동량(m) — roll 커플링용
 let torsoImgBaseline = null; // 어깨-골반 세로 이미지 거리 ÷ 어깨 폭 (중립 비율, 거리 불변)
 let danceMode = false;       // 골반 visibility hysteresis로 전환
 
@@ -3923,6 +3926,7 @@ function resetPose(deltaTime) {
     leanBaseline = null;
     bowPitchSmooth = 0;
     torsoImgBaseline = null;
+    lastSwayOffX = 0;
     danceMode = false;
     for (const key of ['right', 'left', 'rightLeg', 'leftLeg']) {
         ikPlaneState[key].twistFlip = false;
@@ -4424,7 +4428,9 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         // 골반이 프레임 밖이면 노이즈 회전 방지 — 중립 유지
         // (hipsQuat이 identity로 남아 상체가 어깨 회전 전체를 받음)
         if (danceMode) {
-            const rollH = (mpRHip.y - mpLHip.y) * 1.2 * (isVRM0 ? -1 : 1);
+            // roll = 측정된 hip 라인 기울기 + 무게이동 커플링(골반을 옆으로 민 만큼 기울임)
+            // — 골반 춤에서 hip 라인 y차는 작아 측정 roll만으로는 표현이 약함(실측 ±5°)
+            const rollH = ((mpRHip.y - mpLHip.y) * 1.2 + lastSwayOffX * DANCE_ROLL_COUPLE) * (isVRM0 ? -1 : 1);
             const yawH = (mpRHip.z - mpLHip.z) * 1.0;
             hipsQuat.setFromEuler(new THREE.Euler(0, yawH, rollH, 'XYZ'));
         }
@@ -4621,10 +4627,14 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
                 scale = Math.min(rW.distanceTo(lW) / Math.max(shoulderWidthImg, 0.08), 3.0);
             }
 
-            // 미러링(-x), 이미지 y(아래+) → 월드 y(위+); 댄스 모드는 골반 sway 범위 확대
-            const maxSwayX = danceMode ? 0.3 : 0.25;
-            const offX = THREE.MathUtils.clamp(-(refX - baseline.x) * scale, -maxSwayX, maxSwayX);
+            // 미러링(-x), 이미지 y(아래+) → 월드 y(위+); 댄스 모드는 골반 sway 증폭 + 범위 확대
+            // (레코딩 실측: 골반 춤 입력은 뚜렷한데 루트 이동 ±10cm + 반대편 lean이
+            //  상쇄되어 보여 표현이 약함 → 게인 증폭과 roll 커플링으로 강화)
+            const swayGain = danceMode ? DANCE_SWAY_GAIN : 1;
+            const maxSwayX = danceMode ? 0.35 : 0.25;
+            const offX = THREE.MathUtils.clamp(-(refX - baseline.x) * scale * swayGain, -maxSwayX, maxSwayX);
             const offY = THREE.MathUtils.clamp(-(refY - baseline.y) * scale, -0.3, 0.1);
+            lastSwayOffX = offX; // 다음 프레임 골반 roll 커플링에 사용
 
             // rig 로컬 x는 VRM0(scene 180°Y 회전)에서 월드와 반대
             const xDir = isVRM0 ? -1 : 1;
