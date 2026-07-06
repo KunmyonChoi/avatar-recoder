@@ -20,9 +20,20 @@ const VIDEO_ASPECT = VIDEO_WIDTH / VIDEO_HEIGHT;
 const LERP_SPEED = 12; // 반응 속도 (높을수록 빠름)
 const VIS_THRESHOLD_ON = 0.65;  // 활성화 임계값
 const VIS_THRESHOLD_OFF = 0.45; // 비활성화 임계값 (hysteresis)
+const DANCE_SWAY_GAIN = 1.4;    // 댄스 모드 골반 좌우 이동 증폭 (표현력)
+const DANCE_ROLL_COUPLE = 0.8;  // 골반 이동→기울기 커플링 (rad/m) — 무게이동 표현
 const DANCE_VIS_ON = 0.6;       // 골반 visibility 댄스 모드 진입 임계값
 const DANCE_VIS_OFF = 0.4;      // 댄스 모드 해제 임계값 (hysteresis)
 const BASELINE_ADAPT_SPEED = 0.1; // sway/lean baseline 적응 속도 (τ≈10s)
+const DIST_CONF_MIN = 0.35;       // 원거리 최소 신뢰도 (이 값까지 스무딩 강화)
+
+// 거리 기반 신뢰도: 1 = 표준 거리(가까움), 작을수록 멀어서 랜드마크 노이즈가 커짐
+// → pose 필터·표정·머리 회전의 스무딩을 비례 강화해 원거리 튐을 완화
+let trackingDistConf = 1;
+function updateDistConf(sizeRatio, deltaTime) {
+    const target = THREE.MathUtils.clamp(sizeRatio, DIST_CONF_MIN, 1);
+    trackingDistConf += (target - trackingDistConf) * getLerpFactor(deltaTime, 2);
+}
 const AVATAR_HEAD_HEIGHT = 1.39;  // 아바타 머리 기준 높이(m) — 모델 신장 차이를 흡수해 얼굴 위치 통일
 
 // --- One Euro Filter (떨림 완화) ---
@@ -111,6 +122,16 @@ function getFilteredPoseLandmarks(landmarks, worldLandmarks, timestamp) {
             landmarks: Array.from({ length: 33 }, () => new OneEuroFilter3D(1.5, 0.01)),
             worldLandmarks: Array.from({ length: 33 }, () => new OneEuroFilter3D(1.5, 0.01))
         };
+    }
+
+    // 거리 신뢰도에 따라 필터 강도 조정: 멀수록 cutoff를 낮춰 강한 스무딩 (원거리 튐 완화)
+    const minCutoff = 1.5 * trackingDistConf;
+    const beta = 0.01 * trackingDistConf;
+    for (const group of [poseFilters.landmarks, poseFilters.worldLandmarks]) {
+        for (const f3 of group) {
+            f3.xFilter.minCutoff = f3.yFilter.minCutoff = f3.zFilter.minCutoff = minCutoff;
+            f3.xFilter.beta = f3.yFilter.beta = f3.zFilter.beta = beta;
+        }
     }
 
     const t = timestamp / 1000;  // 초 단위로 변환
@@ -229,6 +250,21 @@ let rightArmActive = false;
 let swayBaseline = null;     // 어깨 중점 (폴백 모드: 골반이 프레임 밖)
 let hipSwayBaseline = null;  // 골반 중점 (댄스 모드: hips를 직접 구동)
 let leanBaseline = null;     // 골반→어깨 기울기 각 (댄스 모드: 상체 lean 중립값)
+let lastSwayOffX = 0;        // 직전 프레임 골반 좌우 이동량(m) — roll 커플링용
+
+// --- 발 사이드 스텝: 골반이 발에서 지속적으로 멀어지면 발이 한 발씩 따라옴 ---
+const STEP_TRIGGER_DIST = 0.22; // 골반-발중심 수평 이격 임계(m)
+const STEP_SUSTAIN_TIME = 0.45; // 임계 초과 지속 시간(s) — 춤의 왕복 sway는 걸러냄
+const STEP_DURATION = 0.3;      // 한 발 이동 시간(s)
+const STEP_HEIGHT = 0.06;       // 스텝 중 발 들어올림(m)
+const STEP_COOLDOWN = 0.25;     // 스텝 간 최소 간격(s)
+const STANCE_MISMATCH = 0.08;   // 양발 오프셋 차 허용치(m) — 초과 시 뒷발 따라붙음
+let footStep = {
+    offL: 0, offR: 0,      // 발 앵커의 rest 대비 월드 x 오프셋(m)
+    liftL: 0, liftR: 0,    // 스텝 중 발 높이(m)
+    sustainT: 0, cooldownT: 0,
+    active: null           // { side, fromX, toX, t }
+};
 let danceMode = false;       // 골반 visibility hysteresis로 전환
 
 // --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
@@ -3673,6 +3709,11 @@ async function loadAvatar(url = './avatar.vrm') {
                 vrm.scene.userData[side + 'FootRestLocal'] = vrm.scene.worldToLocal(w);
             }
         }
+
+        // 사이드 스텝 상태 초기화 (새 아바타의 rest 앵커 기준으로 재시작)
+        footStep.offL = footStep.offR = footStep.liftL = footStep.liftR = 0;
+        footStep.sustainT = footStep.cooldownT = 0;
+        footStep.active = null;
         console.log("Avatar loaded:", url);
     } catch (err) {
         console.error("VRM load error:", err);
@@ -3724,6 +3765,14 @@ function animate() {
             // 1. Detect Face
             if (faceLandmarker) {
                 const results = faceLandmarker.detectForVideo(video, currentTime);
+
+                // Body tracking이 꺼져 있으면 얼굴 폭으로 거리 신뢰도 갱신 (멀수록 스무딩 강화)
+                if (!BODY_TRACKING_ENABLED && results.faceLandmarks && results.faceLandmarks.length > 0) {
+                    const fl = results.faceLandmarks[0];
+                    const faceW = Math.abs(fl[454].x - fl[234].x) * VIDEO_ASPECT;
+                    updateDistConf(faceW / 0.2, deltaTime);
+                }
+
                 if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
                     applyBlendshapes(results.faceBlendshapes[0], deltaTime);
                 }
@@ -3919,7 +3968,15 @@ function resetPose(deltaTime) {
     swayBaseline = null;
     hipSwayBaseline = null;
     leanBaseline = null;
+    lastSwayOffX = 0;
     danceMode = false;
+
+    // 사이드 스텝 상태: 진행 중 스텝 취소, 발 앵커는 rest로 서서히 복귀
+    footStep.active = null;
+    footStep.sustainT = 0;
+    footStep.liftL = footStep.liftR = 0;
+    footStep.offL = THREE.MathUtils.lerp(footStep.offL, 0, factor);
+    footStep.offR = THREE.MathUtils.lerp(footStep.offR, 0, factor);
     for (const key of ['right', 'left', 'rightLeg', 'leftLeg']) {
         ikPlaneState[key].twistFlip = false;
         ikPlaneState[key].pronation = 0;
@@ -3999,7 +4056,11 @@ function selectDebugBone(step) {
 }
 
 function deselectDebugBone() {
-    if (boneEditControls) boneEditControls.detach();
+    if (boneEditControls) {
+        // 기즈모 조작으로 미세 비정규가 남지 않도록 해제 시 정규화
+        boneEditControls.object?.quaternion?.normalize();
+        boneEditControls.detach();
+    }
     boneEditIndex = -1;
 }
 
@@ -4181,6 +4242,16 @@ const ikPlaneState = {
 // 현상을 완화 — 방향은 즉시 따라가고 비틀림은 천천히 따라잡음.
 function slerpSwingTwist(bone, qTarget, axis, swingFactor, twistFactor) {
     const qCur = bone.quaternion;
+
+    // 방어선: 본 쿼터니언이 퇴화(zero/NaN/큰 비정규)하면 어떤 slerp로도 회복이
+    // 불가능해 영구 고착됨(실측: 팔이 T-pose에 얼어붙는 증상) — 감지 시 identity로 복구
+    const lenSq = qCur.lengthSq();
+    if (!isFinite(lenSq) || lenSq < 0.25 || lenSq > 4) {
+        qCur.identity();
+    } else if (Math.abs(lenSq - 1) > 1e-3) {
+        qCur.normalize(); // 미세 드리프트는 즉시 세척 (자기 증폭 차단)
+    }
+
     const delta = qCur.clone().invert().multiply(qTarget); // 로컬 프레임 잔여 회전
 
     // delta = swing ∘ twist 분해 (twist: axis 성분 사영)
@@ -4196,6 +4267,12 @@ function slerpSwingTwist(bone, qTarget, axis, swingFactor, twistFactor) {
     const partialSwing = new THREE.Quaternion().slerp(swing, swingFactor);
     const partialTwist = new THREE.Quaternion().slerp(twist, twistFactor);
     bone.quaternion.copy(qCur).multiply(partialSwing).multiply(partialTwist);
+    // 결과가 유한하지 않으면(목표에 NaN 유입 등) 오염 대신 이전 정규값 유지
+    if (!isFinite(bone.quaternion.lengthSq())) {
+        bone.quaternion.copy(qCur);
+    } else {
+        bone.quaternion.normalize();
+    }
 }
 
 // boneAxis는 rig 로컬(로드 시점 프레임) 기준 rest 방향.
@@ -4307,7 +4384,7 @@ function solveTwoBoneIK(upperBone, lowerBone, upperLength, lowerLength, targetPo
         // (applyHandOrientation의 서보가 갱신). postmultiply는 전완 방향은 유지하면서
         // 롤만 바꾸므로 트래킹 정확도에 영향 없음. 팔꿈치 경계의 가지 보정 덩어리도
         // 이 롤이 상쇄해 체인 전체에 비틀림이 분산됨.
-        if (planeState.pronation) {
+        if (planeState.pronation && isFinite(planeState.pronation)) {
             qLowerLocal.multiply(new THREE.Quaternion().setFromAxisAngle(boneAxis, planeState.pronation));
         }
     }
@@ -4327,6 +4404,12 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     const factor = getLerpFactor(deltaTime);
     // VRM 0.x는 rotateVRM0으로 scene이 180°Y 회전 → normalized bone의 X·Z 방향 반전
     const isVRM0 = currentVrm.meta?.metaVersion === '0';
+
+    // 거리 신뢰도 갱신: 화면 속 어깨 폭이 표준(0.25) 대비 작을수록 멀리 있는 것
+    if (landmarks) {
+        const shoulderWImg = Math.abs(landmarks[11].x - landmarks[12].x) * VIDEO_ASPECT;
+        updateDistConf(shoulderWImg / 0.25, deltaTime);
+    }
 
     // 랜드마크를 VRM 좌표계로 변환하는 헬퍼
     const getPos = (index) => {
@@ -4370,7 +4453,9 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         // 골반이 프레임 밖이면 노이즈 회전 방지 — 중립 유지
         // (hipsQuat이 identity로 남아 상체가 어깨 회전 전체를 받음)
         if (danceMode) {
-            const rollH = (mpRHip.y - mpLHip.y) * 1.2 * (isVRM0 ? -1 : 1);
+            // roll = 측정된 hip 라인 기울기 + 무게이동 커플링(골반을 옆으로 민 만큼 기울임)
+            // — 골반 춤에서 hip 라인 y차는 작아 측정 roll만으로는 표현이 약함(실측 ±5°)
+            const rollH = ((mpRHip.y - mpLHip.y) * 1.2 + lastSwayOffX * DANCE_ROLL_COUPLE) * (isVRM0 ? -1 : 1);
             const yawH = (mpRHip.z - mpLHip.z) * 1.0;
             hipsQuat.setFromEuler(new THREE.Euler(0, yawH, rollH, 'XYZ'));
         }
@@ -4533,6 +4618,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         } else if (shoulderVis > 0.5) {
             refX = (landmarks[11].x + landmarks[12].x) / 2 * aspect;
             refY = (landmarks[11].y + landmarks[12].y) / 2;
+
             if (!swayBaseline) swayBaseline = { x: refX, y: refY };
             baseline = swayBaseline;
         }
@@ -4553,10 +4639,14 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
                 scale = Math.min(rW.distanceTo(lW) / Math.max(shoulderWidthImg, 0.08), 3.0);
             }
 
-            // 미러링(-x), 이미지 y(아래+) → 월드 y(위+); 댄스 모드는 골반 sway 범위 확대
-            const maxSwayX = danceMode ? 0.3 : 0.25;
-            const offX = THREE.MathUtils.clamp(-(refX - baseline.x) * scale, -maxSwayX, maxSwayX);
+            // 미러링(-x), 이미지 y(아래+) → 월드 y(위+); 댄스 모드는 골반 sway 증폭 + 범위 확대
+            // (레코딩 실측: 골반 춤 입력은 뚜렷한데 루트 이동 ±10cm + 반대편 lean이
+            //  상쇄되어 보여 표현이 약함 → 게인 증폭과 roll 커플링으로 강화)
+            const swayGain = danceMode ? DANCE_SWAY_GAIN : 1;
+            const maxSwayX = danceMode ? 0.35 : 0.25;
+            const offX = THREE.MathUtils.clamp(-(refX - baseline.x) * scale * swayGain, -maxSwayX, maxSwayX);
             const offY = THREE.MathUtils.clamp(-(refY - baseline.y) * scale, -0.3, 0.1);
+            lastSwayOffX = offX; // 다음 프레임 골반 roll 커플링에 사용
 
             // rig 로컬 x는 VRM0(scene 180°Y 회전)에서 월드와 반대
             const xDir = isVRM0 ? -1 : 1;
@@ -4570,10 +4660,60 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     // ============================================================
     // 다리: 발을 지면 rest 위치에 고정하는 Two-Bone IK
     // hips가 이동/회전하면 다리가 자연스럽게 굽혀져 발 착지 유지 (VTuber 스타일)
+    // 골반이 발에서 지속적으로 멀어지면(실제 옆걸음) 발이 한 발씩 따라오는 사이드 스텝
     // ============================================================
+    if (hips && hipsRestPos) updateFootStepping(hips, hipsRestPos, isVRM0, deltaTime);
     currentVrm.scene.updateWorldMatrix(true, false);
     solvePinnedFootLeg('right', deltaTime);
     solvePinnedFootLeg('left', deltaTime);
+}
+
+// 사이드 스텝 상태 머신: 골반-발중심 이격이 임계를 '지속' 초과하면(왕복 sway 제외)
+// 이동 방향 쪽 발부터 smoothstep으로 이동 + sin 곡선으로 들어올림.
+// 한 발 이동 후 스탠스가 어긋나면 뒷발이 따라붙음. baseline이 골반을 중립으로
+// 되돌리면 반대 방향 이격이 생겨 발도 자동으로 되돌아옴 (자기 수렴).
+function updateFootStepping(hips, hipsRestPos, isVRM0, deltaTime) {
+    const xDir = isVRM0 ? -1 : 1;
+    const hipsOffX = (hips.position.x - hipsRestPos.x) * xDir; // 월드 기준 골반 이동량
+
+    const fs = footStep;
+    if (fs.active) {
+        fs.active.t += deltaTime;
+        const p = Math.min(fs.active.t / STEP_DURATION, 1);
+        const s = p * p * (3 - 2 * p); // smoothstep
+        const off = THREE.MathUtils.lerp(fs.active.fromX, fs.active.toX, s);
+        const lift = STEP_HEIGHT * Math.sin(Math.PI * p);
+        if (fs.active.side === 'left') { fs.offL = off; fs.liftL = lift; }
+        else { fs.offR = off; fs.liftR = lift; }
+        if (p >= 1) {
+            if (fs.active.side === 'left') fs.liftL = 0; else fs.liftR = 0;
+            fs.active = null;
+            fs.cooldownT = STEP_COOLDOWN;
+            fs.sustainT = 0;
+        }
+        return;
+    }
+
+    fs.cooldownT = Math.max(0, fs.cooldownT - deltaTime);
+    const feetMid = (fs.offL + fs.offR) / 2;
+    const gap = hipsOffX - feetMid;
+
+    if (Math.abs(gap) > STEP_TRIGGER_DIST) fs.sustainT += deltaTime;
+    else fs.sustainT = 0;
+
+    if (fs.cooldownT > 0) return;
+
+    if (fs.sustainT > STEP_SUSTAIN_TIME) {
+        // 이동 방향 쪽 발부터 (아바타 왼발이 월드 +X 쪽)
+        const side = gap > 0 ? 'left' : 'right';
+        fs.active = { side, fromX: side === 'left' ? fs.offL : fs.offR, toX: hipsOffX, t: 0 };
+    } else if (Math.abs(fs.offL - fs.offR) > STANCE_MISMATCH) {
+        // 스탠스가 어긋나 있으면 골반에서 먼 발(뒷발)이 따라붙음
+        const dL = Math.abs(fs.offL - hipsOffX);
+        const dR = Math.abs(fs.offR - hipsOffX);
+        const side = dL > dR ? 'left' : 'right';
+        fs.active = { side, fromX: side === 'left' ? fs.offL : fs.offR, toX: hipsOffX, t: 0 };
+    }
 }
 
 // 발 고정 다리 IK: hips 현재 위치에서 로드 시 저장한 발 rest 위치로 다리를 풀어줌
@@ -4590,8 +4730,14 @@ function solvePinnedFootLeg(side, deltaTime) {
     const upperLen = lower.position.length();
     const lowerLen = foot.position.length();
 
+    // 사이드 스텝 오프셋/들어올림 반영 (scene-local x는 VRM0에서 월드와 반대)
+    const isVRM0Local = currentVrm.meta?.metaVersion === '0';
+    const anchorLocal = footRestLocal.clone();
+    anchorLocal.x += (side === 'left' ? footStep.offL : footStep.offR) * (isVRM0Local ? -1 : 1);
+    anchorLocal.y += side === 'left' ? footStep.liftL : footStep.liftR;
+
     // scene의 updateWorldMatrix는 호출부(applyPose)에서 프레임당 1회 수행
-    const footTarget = currentVrm.scene.localToWorld(footRestLocal.clone());
+    const footTarget = currentVrm.scene.localToWorld(anchorLocal);
     const hipJoint = upper.getWorldPosition(new THREE.Vector3());
     const target = footTarget.sub(hipJoint);
 
@@ -4627,7 +4773,8 @@ const DEBUG_INTERVAL = 2000;
 function applyHands(landmarksArray, handednesses, deltaTime) {
     if (!currentVrm) return;
 
-    const factor = getLerpFactor(deltaTime, 15);
+    // 원거리에서는 손 랜드마크 노이즈가 커지므로 스무딩 강화
+    const factor = getLerpFactor(deltaTime, 15 * trackingDistConf);
     const now = performance.now();
     const shouldLog = (now - lastDebugTime) > DEBUG_INTERVAL;
 
@@ -4740,12 +4887,18 @@ function applyHandOrientation(prefix, landmarks, factor, deltaTime) {
             if (wristTwist > 2 * Math.PI) wristTwist -= 2 * Math.PI;
             else if (wristTwist < -2 * Math.PI) wristTwist += 2 * Math.PI;
         }
+        // 유한성 가드: NaN이 서보 상태에 들어오면 IK 전체로 오염이 번지므로 즉시 리셋
+        if (!isFinite(wristTwist)) {
+            state.wristTwist = null;
+            return;
+        }
         state.wristTwist = wristTwist;
 
         const limit = Math.PI / 3; // 손목 허용 비틀림 ±60°
         const overflow = wristTwist - THREE.MathUtils.clamp(wristTwist, -limit, limit);
         const target = THREE.MathUtils.clamp(state.pronation + overflow, -2.1, 2.1);
         state.pronation += (target - state.pronation) * getLerpFactor(deltaTime, 4);
+        if (!isFinite(state.pronation)) state.pronation = 0;
     }
 }
 
@@ -4901,7 +5054,8 @@ function exaggerate(score, deadzone = 0.05, curve = 0.75) {
 function applyBlendshapes(blendShapesData, deltaTime) {
     if (!currentVrm) return;
 
-    const factor = getLerpFactor(deltaTime, 15); // 표정은 빠르게 반응
+    // 표정은 빠르게 반응하되, 원거리에서는 blendshape 노이즈가 커지므로 스무딩 강화
+    const factor = getLerpFactor(deltaTime, 15 * trackingDistConf);
 
     const presetName = VRMExpressionPresetName;
     const expressions = currentVrm.expressionManager;
@@ -5047,7 +5201,8 @@ function applyBlendshapes(blendShapesData, deltaTime) {
 function applyHeadRotation(matrix, deltaTime) {
     if (!currentVrm) return;
 
-    const factor = getLerpFactor(deltaTime, 10);
+    // 원거리에서는 얼굴 행렬 노이즈가 커지므로 스무딩 강화
+    const factor = getLerpFactor(deltaTime, 10 * trackingDistConf);
 
     const m = new THREE.Matrix4().fromArray(matrix.data);
     const rot = new THREE.Quaternion().setFromRotationMatrix(m);
