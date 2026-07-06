@@ -4722,7 +4722,11 @@ function applyHandOrientation(prefix, landmarks, factor, deltaTime) {
     if (state && deltaTime !== undefined) {
         const qs = qLocal.clone();
         if (qs.w < 0) qs.set(-qs.x, -qs.y, -qs.z, -qs.w);
-        let wristTwist = 2 * Math.atan2(qs.x, qs.w); // hand 본 축(±X) 기준 twist
+        // 측정 축을 팔 체인의 boneAxis 부호 규약과 일치시킴 — 고정 +X로 측정하면
+        // boneAxis가 -X인 조합(VRM1 오른팔 등)에서 서보 피드백 부호가 뒤집혀 발산함
+        // (옆으로 벌린 팔 레코딩 실측: 전완 62°→191° 폭주, 손목이 동량 역방향)
+        const axisSign = (isRight ? -1 : 1) * (isVRM0 ? -1 : 1);
+        let wristTwist = 2 * Math.atan2(qs.x * axisSign, qs.w); // hand 본 축 기준 twist
 
         // 연속화(unwrap): 손목 twist가 ±180° 경계에 있으면 최단 표현의 부호가
         // 프레임마다 널뛰어 서보 적분이 자기 상쇄됨(모션 레코딩 실측) —
