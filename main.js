@@ -25,6 +25,15 @@ const DANCE_ROLL_COUPLE = 0.8;  // 골반 이동→기울기 커플링 (rad/m) �
 const DANCE_VIS_ON = 0.6;       // 골반 visibility 댄스 모드 진입 임계값
 const DANCE_VIS_OFF = 0.4;      // 댄스 모드 해제 임계값 (hysteresis)
 const BASELINE_ADAPT_SPEED = 0.1; // sway/lean baseline 적응 속도 (τ≈10s)
+const DIST_CONF_MIN = 0.35;       // 원거리 최소 신뢰도 (이 값까지 스무딩 강화)
+
+// 거리 기반 신뢰도: 1 = 표준 거리(가까움), 작을수록 멀어서 랜드마크 노이즈가 커짐
+// → pose 필터·표정·머리 회전의 스무딩을 비례 강화해 원거리 튐을 완화
+let trackingDistConf = 1;
+function updateDistConf(sizeRatio, deltaTime) {
+    const target = THREE.MathUtils.clamp(sizeRatio, DIST_CONF_MIN, 1);
+    trackingDistConf += (target - trackingDistConf) * getLerpFactor(deltaTime, 2);
+}
 const AVATAR_HEAD_HEIGHT = 1.39;  // 아바타 머리 기준 높이(m) — 모델 신장 차이를 흡수해 얼굴 위치 통일
 
 // --- One Euro Filter (떨림 완화) ---
@@ -113,6 +122,16 @@ function getFilteredPoseLandmarks(landmarks, worldLandmarks, timestamp) {
             landmarks: Array.from({ length: 33 }, () => new OneEuroFilter3D(1.5, 0.01)),
             worldLandmarks: Array.from({ length: 33 }, () => new OneEuroFilter3D(1.5, 0.01))
         };
+    }
+
+    // 거리 신뢰도에 따라 필터 강도 조정: 멀수록 cutoff를 낮춰 강한 스무딩 (원거리 튐 완화)
+    const minCutoff = 1.5 * trackingDistConf;
+    const beta = 0.01 * trackingDistConf;
+    for (const group of [poseFilters.landmarks, poseFilters.worldLandmarks]) {
+        for (const f3 of group) {
+            f3.xFilter.minCutoff = f3.yFilter.minCutoff = f3.zFilter.minCutoff = minCutoff;
+            f3.xFilter.beta = f3.yFilter.beta = f3.zFilter.beta = beta;
+        }
     }
 
     const t = timestamp / 1000;  // 초 단위로 변환
@@ -3727,6 +3746,14 @@ function animate() {
             // 1. Detect Face
             if (faceLandmarker) {
                 const results = faceLandmarker.detectForVideo(video, currentTime);
+
+                // Body tracking이 꺼져 있으면 얼굴 폭으로 거리 신뢰도 갱신 (멀수록 스무딩 강화)
+                if (!BODY_TRACKING_ENABLED && results.faceLandmarks && results.faceLandmarks.length > 0) {
+                    const fl = results.faceLandmarks[0];
+                    const faceW = Math.abs(fl[454].x - fl[234].x) * VIDEO_ASPECT;
+                    updateDistConf(faceW / 0.2, deltaTime);
+                }
+
                 if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
                     applyBlendshapes(results.faceBlendshapes[0], deltaTime);
                 }
@@ -4352,6 +4379,12 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     // VRM 0.x는 rotateVRM0으로 scene이 180°Y 회전 → normalized bone의 X·Z 방향 반전
     const isVRM0 = currentVrm.meta?.metaVersion === '0';
 
+    // 거리 신뢰도 갱신: 화면 속 어깨 폭이 표준(0.25) 대비 작을수록 멀리 있는 것
+    if (landmarks) {
+        const shoulderWImg = Math.abs(landmarks[11].x - landmarks[12].x) * VIDEO_ASPECT;
+        updateDistConf(shoulderWImg / 0.25, deltaTime);
+    }
+
     // 랜드마크를 VRM 좌표계로 변환하는 헬퍼
     const getPos = (index) => {
         const source = worldLandmarks || landmarks;
@@ -4658,7 +4691,8 @@ const DEBUG_INTERVAL = 2000;
 function applyHands(landmarksArray, handednesses, deltaTime) {
     if (!currentVrm) return;
 
-    const factor = getLerpFactor(deltaTime, 15);
+    // 원거리에서는 손 랜드마크 노이즈가 커지므로 스무딩 강화
+    const factor = getLerpFactor(deltaTime, 15 * trackingDistConf);
     const now = performance.now();
     const shouldLog = (now - lastDebugTime) > DEBUG_INTERVAL;
 
@@ -4938,7 +4972,8 @@ function exaggerate(score, deadzone = 0.05, curve = 0.75) {
 function applyBlendshapes(blendShapesData, deltaTime) {
     if (!currentVrm) return;
 
-    const factor = getLerpFactor(deltaTime, 15); // 표정은 빠르게 반응
+    // 표정은 빠르게 반응하되, 원거리에서는 blendshape 노이즈가 커지므로 스무딩 강화
+    const factor = getLerpFactor(deltaTime, 15 * trackingDistConf);
 
     const presetName = VRMExpressionPresetName;
     const expressions = currentVrm.expressionManager;
@@ -5084,7 +5119,8 @@ function applyBlendshapes(blendShapesData, deltaTime) {
 function applyHeadRotation(matrix, deltaTime) {
     if (!currentVrm) return;
 
-    const factor = getLerpFactor(deltaTime, 10);
+    // 원거리에서는 얼굴 행렬 노이즈가 커지므로 스무딩 강화
+    const factor = getLerpFactor(deltaTime, 10 * trackingDistConf);
 
     const m = new THREE.Matrix4().fromArray(matrix.data);
     const rot = new THREE.Quaternion().setFromRotationMatrix(m);
