@@ -229,6 +229,8 @@ let rightArmActive = false;
 let swayBaseline = null;     // 어깨 중점 (폴백 모드: 골반이 프레임 밖)
 let hipSwayBaseline = null;  // 골반 중점 (댄스 모드: hips를 직접 구동)
 let leanBaseline = null;     // 골반→어깨 기울기 각 (댄스 모드: 상체 lean 중립값)
+let bowBaseline = null;      // 상체 pitch(앞뒤 숙임, 인사) 중립값 — world landmark 기준
+let torsoImgBaseline = null; // 이미지 상 어깨-골반 세로 거리 중립값 (숙임↔웅크림 분리용)
 let danceMode = false;       // 골반 visibility hysteresis로 전환
 
 // --- Hand Tracking 결과 저장 (아바타 기준 좌/우, 미검출 시 null) ---
@@ -3919,6 +3921,8 @@ function resetPose(deltaTime) {
     swayBaseline = null;
     hipSwayBaseline = null;
     leanBaseline = null;
+    bowBaseline = null;
+    torsoImgBaseline = null;
     danceMode = false;
     for (const key of ['right', 'left', 'rightLeg', 'leftLeg']) {
         ikPlaneState[key].twistFlip = false;
@@ -4343,6 +4347,34 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
     const lLower = currentVrm.humanoid.getNormalizedBoneNode('leftLowerArm');
     const lHand = currentVrm.humanoid.getNormalizedBoneNode('leftHand');
 
+    // --- 상체 pitch(앞뒤 숙임) 추정: 인사(bow) ---
+    // world landmark는 골반 원점 기준이라 어깨 중점의 전후(z)/상하(y) 성분이 곧 상체 기울기.
+    // 골반이 프레임 밖이어도 MediaPipe가 골반을 추정해 원점을 잡으므로 상반신 프레이밍에서도 동작
+    let bowPitch = 0; // 라디안, + = 앞으로 숙임
+    if (worldLandmarks) {
+        const ls = mpToVRM(worldLandmarks[11]);
+        const rs = mpToVRM(worldLandmarks[12]);
+        const lh = mpToVRM(worldLandmarks[23]);
+        const rh = mpToVRM(worldLandmarks[24]);
+        const vy = (ls.y + rs.y) / 2 - (lh.y + rh.y) / 2;
+        const vz = (ls.z + rs.z) / 2 - (lh.z + rh.z) / 2;
+        if (vy > 0.05) { // 어깨가 골반보다 충분히 위에 있을 때만 (노이즈/뒤집힘 가드)
+            const pitch = Math.atan2(vz, vy);
+            // 중립 baseline (카메라 각도·개인 자세 흡수) — 인사는 1~3초 동작이라 τ≈10s로 충분
+            if (bowBaseline === null) bowBaseline = pitch;
+            bowBaseline += (pitch - bowBaseline) * getLerpFactor(deltaTime, BASELINE_ADAPT_SPEED);
+            // deadzone 5° + 클램프 (앞으로 최대 50°, 뒤로 20°)
+            let off = pitch - bowBaseline;
+            const deadzone = THREE.MathUtils.degToRad(5);
+            off = Math.abs(off) < deadzone ? 0 : off - Math.sign(off) * deadzone;
+            bowPitch = THREE.MathUtils.clamp(off, -THREE.MathUtils.degToRad(20), THREE.MathUtils.degToRad(50));
+        }
+    }
+    // 분배: 인사는 고관절에서 접힘 — hips 60% + spine 40% (X축 회전은 VRM0에서 부호 반전)
+    const bowDir = isVRM0 ? -1 : 1;
+    const qBowHips = new THREE.Quaternion().setFromEuler(new THREE.Euler(bowPitch * 0.6 * bowDir, 0, 0));
+    const qBowSpine = new THREE.Quaternion().setFromEuler(new THREE.Euler(bowPitch * 0.4 * bowDir, 0, 0));
+
     // --- Hips 회전 (골반 롤/요) ---
     // 회전 부호는 spine과 동일한 규약: Y축 회전은 rotateVRM0(180°Y)에 불변이라 yaw는 버전 공통,
     // Z축(roll)만 VRM0에서 반전
@@ -4374,6 +4406,8 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
             const yawH = (mpRHip.z - mpLHip.z) * 1.0;
             hipsQuat.setFromEuler(new THREE.Euler(0, yawH, rollH, 'XYZ'));
         }
+        // 인사 pitch는 모드와 무관하게 골반에 적용 (spine 잔여분 계산에도 자동 반영)
+        hipsQuat.premultiply(qBowHips);
         hips.quaternion.slerp(hipsQuat, factor * 0.5);
     }
 
@@ -4411,6 +4445,7 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
             // 미러링(-x)과 Rz(+θ가 상단을 -X로 기울임)의 부호가 상쇄되어 이미지 각도를 그대로 사용
             const lean = THREE.MathUtils.clamp(leanAngle - leanBaseline, -Math.PI / 6, Math.PI / 6);
             const qLean = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, lean * (isVRM0 ? -1 : 1)));
+            qLean.premultiply(qBowSpine); // 인사 pitch의 spine 분담분 합성
 
             // 어깨 라인 회전은 (hips × spine) 위에 얹는 잔여분
             const qResidual = hipsQuat.clone().multiply(qLean).invert().multiply(qShoulder);
@@ -4423,7 +4458,8 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
             }
         } else {
             // hips가 이미 골반 회전을 반영하므로, spine은 어깨 회전에서 골반 회전을 뺀 잔여분만 적용
-            const q = hipsQuat.clone().invert().multiply(qShoulder);
+            // (+ 인사 pitch의 spine 분담분)
+            const q = qBowSpine.clone().multiply(hipsQuat.clone().invert().multiply(qShoulder));
             spine.quaternion.slerp(q, factor * 0.5); // 상체는 더 부드럽게
             if (chest) chest.quaternion.slerp(IDENTITY_QUAT, factor * 0.3);
         }
@@ -4533,6 +4569,16 @@ function applyPose(landmarks, worldLandmarks, deltaTime) {
         } else if (shoulderVis > 0.5) {
             refX = (landmarks[11].x + landmarks[12].x) / 2 * aspect;
             refY = (landmarks[11].y + landmarks[12].y) / 2;
+
+            // 숙임(bow)으로 인한 어깨 하강을 웅크림(bob)으로 오해하지 않도록 보정:
+            // 이미지 상 어깨-골반 세로 거리 중립값으로 pitch에 따른 하강분을 차감
+            const torsoImgLen = Math.abs((landmarks[23].y + landmarks[24].y) / 2 - refY);
+            if (torsoImgBaseline === null) torsoImgBaseline = torsoImgLen;
+            if (Math.abs(bowPitch) < 0.05) { // 숙이지 않을 때만 중립값 갱신
+                torsoImgBaseline += (torsoImgLen - torsoImgBaseline) * getLerpFactor(deltaTime, BASELINE_ADAPT_SPEED);
+            }
+            refY -= torsoImgBaseline * (1 - Math.cos(bowPitch));
+
             if (!swayBaseline) swayBaseline = { x: refX, y: refY };
             baseline = swayBaseline;
         }
