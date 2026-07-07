@@ -532,7 +532,9 @@ function initSpeechRecognition() {
     };
 
     speechRecognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
+        if (event.error !== 'no-speech') {
+            console.error('Speech recognition error:', event.error);
+        }
         switch (event.error) {
             case 'not-allowed':
                 alert('마이크 권한이 필요합니다. 브라우저 설정에서 마이크 권한을 허용해주세요.');
@@ -561,6 +563,9 @@ function initSpeechRecognition() {
                 break;
             case 'aborted':
                 console.log('[Captions] Recognition aborted');
+                break;
+            case 'no-speech':
+                // 조용히 무시: onend에서 자동 재시작됨
                 break;
             default:
                 console.warn('[Captions] Unhandled error:', event.error);

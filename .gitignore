@@ -39,3 +39,6 @@ dist-ssr
 
 # Local test avatar models (large binaries)
 avatars/
+
+# Local Netlify folder
+.netlify
