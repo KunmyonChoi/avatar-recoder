@@ -26,6 +26,15 @@ const DANCE_VIS_ON = 0.6;       // 골반 visibility 댄스 모드 진입 임계
 const DANCE_VIS_OFF = 0.4;      // 댄스 모드 해제 임계값 (hysteresis)
 const BASELINE_ADAPT_SPEED = 0.1; // sway/lean baseline 적응 속도 (τ≈10s)
 const DIST_CONF_MIN = 0.35;       // 원거리 최소 신뢰도 (이 값까지 스무딩 강화)
+const RECORDING_TARGET_FPS = 30;
+const RECORDING_FRAME_INTERVAL = 1000 / RECORDING_TARGET_FPS;
+const RECORDING_BODY_FPS = 18;
+const RECORDING_BODY_INTERVAL = 1000 / RECORDING_BODY_FPS;
+const RECORDING_SCREEN_MAX_LONG_EDGE = 1920;
+const RECORDING_SCREEN_MAX_SHORT_EDGE = 1080;
+const RECORDING_AVATAR_WIDTH = 1280;
+const RECORDING_AVATAR_HEIGHT = 720;
+const RECORDING_STATS_INTERVAL = 5000;
 
 // 거리 기반 신뢰도: 1 = 표준 거리(가까움), 작을수록 멀어서 랜드마크 노이즈가 커짐
 // → pose 필터·표정·머리 회전의 스무딩을 비례 강화해 원거리 튐을 완화
@@ -156,6 +165,8 @@ let isAvatarLoading = false;
 let lastVideoTime = -1;
 let lastFrameTime = performance.now();
 let lastDetectionTime = 0;           // 드로잉 중 인식 스로틀링 기준 시각
+let lastFaceDetectionTime = 0;       // 녹화 중 face detect 페이싱 기준
+let lastBodyDetectionTime = 0;       // 녹화 중 pose/hand detect 페이싱 기준
 let blendShapes = [];
 let rotation = new THREE.Euler();
 let currentGesture = 'neutral';
@@ -175,6 +186,7 @@ let recordedChunks = [];             // 녹화 데이터
 let isMiniAvatar = false;            // 미니 아바타 모드
 let miniAvatarPosition = { x: null, y: null };  // 미니 아바타 위치
 let isAvatarVisible = true;          // 아바타 표시 여부
+let recordingStats = null;           // 녹화 성능 계측 집계
 
 // --- Screen Zoom ---
 let screenZoom = 1;
@@ -224,6 +236,142 @@ window.addEventListener('resize', () => {
         stableWindowHeight = window.innerHeight;
     }, 150);
 });
+
+function isRecordingActive() {
+    return !!(mediaRecorder && mediaRecorder.state === 'recording');
+}
+
+function shouldPauseAvatarWorkForRecording() {
+    return isRecordingActive() && !isAvatarVisible && !DEBUG_MODE;
+}
+
+function getRecordingCanvasSize(sourceWidth, sourceHeight) {
+    const safeSourceWidth = sourceWidth > 0 ? sourceWidth : RECORDING_AVATAR_WIDTH;
+    const safeSourceHeight = sourceHeight > 0 ? sourceHeight : RECORDING_AVATAR_HEIGHT;
+
+    if (sourceWidth <= 0 || sourceHeight <= 0) {
+        return { width: RECORDING_AVATAR_WIDTH, height: RECORDING_AVATAR_HEIGHT, scale: 1 };
+    }
+
+    const isLandscape = safeSourceWidth >= safeSourceHeight;
+    const maxWidth = isLandscape ? RECORDING_SCREEN_MAX_LONG_EDGE : RECORDING_SCREEN_MAX_SHORT_EDGE;
+    const maxHeight = isLandscape ? RECORDING_SCREEN_MAX_SHORT_EDGE : RECORDING_SCREEN_MAX_LONG_EDGE;
+    const scale = Math.min(1, maxWidth / safeSourceWidth, maxHeight / safeSourceHeight);
+
+    return {
+        width: Math.max(2, Math.round(safeSourceWidth * scale)),
+        height: Math.max(2, Math.round(safeSourceHeight * scale)),
+        scale,
+    };
+}
+
+function getRecordingVideoBitsPerSecond(width, height) {
+    const pixels = width * height;
+    if (pixels <= 1280 * 720) return 4_000_000;
+    if (pixels <= 1920 * 1080) return 8_000_000;
+    return 12_000_000;
+}
+
+function startRecordingStats(width, height, sourceWidth, sourceHeight) {
+    const screenTrack = screenStream?.getVideoTracks?.()[0];
+    const trackSettings = screenTrack?.getSettings ? screenTrack.getSettings() : null;
+    recordingStats = {
+        startedAt: performance.now(),
+        lastReportAt: performance.now(),
+        width,
+        height,
+        sourceWidth,
+        sourceHeight,
+        trackSettings,
+        animateFrames: 0,
+        compositeFrames: 0,
+        compositeSkipped: 0,
+        longAnimateFrames: 0,
+        longCompositeFrames: 0,
+        recorderChunks: 0,
+        recorderBytes: 0,
+        recorderMaxGap: 0,
+        lastRecorderChunkAt: 0,
+        detect: {
+            face: { count: 0, total: 0, max: 0 },
+            hand: { count: 0, total: 0, max: 0 },
+            pose: { count: 0, total: 0, max: 0 },
+        },
+    };
+    console.info('[RecordingStats] started', {
+        output: `${width}x${height}`,
+        source: `${sourceWidth}x${sourceHeight}`,
+        trackSettings,
+    });
+}
+
+function stopRecordingStats() {
+    if (!recordingStats) return;
+    reportRecordingStats(true);
+    recordingStats = null;
+}
+
+function recordDetectDuration(kind, duration) {
+    if (!recordingStats) return;
+    const bucket = recordingStats.detect[kind];
+    if (!bucket) return;
+    bucket.count += 1;
+    bucket.total += duration;
+    bucket.max = Math.max(bucket.max, duration);
+}
+
+function recordRecorderChunk(size) {
+    if (!recordingStats) return;
+    const now = performance.now();
+    if (recordingStats.lastRecorderChunkAt) {
+        recordingStats.recorderMaxGap = Math.max(recordingStats.recorderMaxGap, now - recordingStats.lastRecorderChunkAt);
+    }
+    recordingStats.lastRecorderChunkAt = now;
+    recordingStats.recorderChunks += 1;
+    recordingStats.recorderBytes += size;
+}
+
+function reportRecordingStats(force = false) {
+    if (!recordingStats) return;
+    const now = performance.now();
+    if (!force && now - recordingStats.lastReportAt < RECORDING_STATS_INTERVAL) return;
+
+    const elapsed = Math.max(0.001, (now - recordingStats.startedAt) / 1000);
+    const avgDetect = (kind) => {
+        const bucket = recordingStats.detect[kind];
+        return bucket.count ? +(bucket.total / bucket.count).toFixed(1) : 0;
+    };
+
+    console.info('[RecordingStats]', {
+        seconds: +elapsed.toFixed(1),
+        output: `${recordingStats.width}x${recordingStats.height}`,
+        source: `${recordingStats.sourceWidth}x${recordingStats.sourceHeight}`,
+        animateFps: +(recordingStats.animateFrames / elapsed).toFixed(1),
+        compositeFps: +(recordingStats.compositeFrames / elapsed).toFixed(1),
+        compositeSkipped: recordingStats.compositeSkipped,
+        longFrames: {
+            animate: recordingStats.longAnimateFrames,
+            composite: recordingStats.longCompositeFrames,
+        },
+        detectMsAvg: {
+            face: avgDetect('face'),
+            hand: avgDetect('hand'),
+            pose: avgDetect('pose'),
+        },
+        detectMsMax: {
+            face: +recordingStats.detect.face.max.toFixed(1),
+            hand: +recordingStats.detect.hand.max.toFixed(1),
+            pose: +recordingStats.detect.pose.max.toFixed(1),
+        },
+        recorder: {
+            chunks: recordingStats.recorderChunks,
+            mb: +(recordingStats.recorderBytes / 1024 / 1024).toFixed(1),
+            maxGapMs: +recordingStats.recorderMaxGap.toFixed(1),
+        },
+        trackSettings: recordingStats.trackSettings,
+    });
+    recordingStats.lastReportAt = now;
+}
 
 // --- Audio ---
 let micStream = null;                // 마이크 스트림
@@ -1260,8 +1408,13 @@ function renderActiveStroke(ctx, nx, ny) {
 }
 
 // ---- Rendering loop for live preview canvas ----
-function drawingRenderLoop() {
+function ensureDrawingRenderLoop() {
+    if (drawRAFId) return;
     drawRAFId = requestAnimationFrame(drawingRenderLoop);
+}
+
+function drawingRenderLoop() {
+    drawRAFId = null;
 
     if (!drawingCanvasEl) return;
     const w = drawingCanvasEl.width;
@@ -1306,6 +1459,10 @@ function drawingRenderLoop() {
     // When draw mode is off and nothing is visible, we're done (canvas stays clear)
     if (!isDrawModeOn && !anyVisible) {
         drawingCanvasCtx.clearRect(0, 0, w, h);
+    }
+
+    if (activeStroke || (isFadeEnabled && drawStrokes.length > 0)) {
+        ensureDrawingRenderLoop();
     }
 }
 
@@ -1402,6 +1559,7 @@ function commitTextInput(cancel) {
     }
 
     el.remove();
+    ensureDrawingRenderLoop();
 }
 
 // ---- Mount a textarea for text composition ----
@@ -1490,6 +1648,7 @@ function onDrawPointerDown(e) {
         try { drawingCanvasEl.setPointerCapture(e.pointerId); } catch(_) {}
         document.addEventListener('pointermove', onDrawPointerMove, { passive: false });
         document.addEventListener('pointerup', onDrawPointerUpGlobal);
+        ensureDrawingRenderLoop();
         return;
     }
 
@@ -1513,6 +1672,7 @@ function onDrawPointerDown(e) {
     if (drawCurrentTool === 'eraser') {
         eraseAt(nx, ny, drawCurrentSize);
         activeStroke = { type: 'eraser', x: nx, y: ny };
+        ensureDrawingRenderLoop();
         return;
     }
 
@@ -1571,6 +1731,7 @@ function onDrawPointerDown(e) {
         try { drawingCanvasEl.setPointerCapture(e.pointerId); } catch(_) {}
         document.addEventListener('pointermove', onDrawPointerMove, { passive: false });
         document.addEventListener('pointerup', onDrawPointerUpGlobal);
+        ensureDrawingRenderLoop();
     }
 }
 
@@ -1596,6 +1757,7 @@ function onDrawPointerMove(e) {
             activeStroke.x = nx;
             activeStroke.y = ny;
         }
+        ensureDrawingRenderLoop();
         return;
     }
 
@@ -1610,12 +1772,14 @@ function onDrawPointerMove(e) {
         activeStroke.x2 = (e.clientX - rect.left) / rect.width;
         activeStroke.y2 = (e.clientY - rect.top)  / rect.height;
     }
+    ensureDrawingRenderLoop();
 }
 
 function onDrawPointerUp(e) {
     if (!activeStroke) return;
     if (activeStroke.type === 'eraser') {
         activeStroke = null;
+        ensureDrawingRenderLoop();
         return;
     }
 
@@ -1642,6 +1806,7 @@ function onDrawPointerUp(e) {
     }
 
     activeStroke = null;
+    ensureDrawingRenderLoop();
 }
 
 // ---- Drawing canvas resize sync ----
@@ -1651,6 +1816,7 @@ function syncDrawingCanvasSize() {
     if (!container) return;
     drawingCanvasEl.width = container.clientWidth;
     drawingCanvasEl.height = container.clientHeight;
+    ensureDrawingRenderLoop();
 }
 
 // ---- Toggle draw mode ----
@@ -1669,6 +1835,7 @@ function toggleDrawMode(on) {
         // commit any in-progress text
         if (textComposingEl) commitTextInput(false);
     }
+    ensureDrawingRenderLoop();
 }
 
 function updateDrawToolCursor() {
@@ -1698,8 +1865,8 @@ function setupDrawing() {
     const container = document.getElementById('preview-container');
     if (container) ro.observe(container);
 
-    // Start RAF loop
-    drawingRenderLoop();
+    // Draw lazily; the loop wakes on edits and only stays active for fades/active strokes.
+    ensureDrawingRenderLoop();
 
     // Toggle draw button
     const toggleDrawBtn = document.getElementById('toggle-draw');
@@ -1748,6 +1915,7 @@ function setupDrawing() {
             } else {
                 drawStrokes.forEach(s => { s.opacity = 1; });
             }
+            ensureDrawingRenderLoop();
         });
     }
 
@@ -1937,6 +2105,7 @@ function drawUndo() {
     } else if (entry.action === 'remove') {
         drawStrokes.push(entry.stroke);
     }
+    ensureDrawingRenderLoop();
 }
 
 function drawClear() {
@@ -1944,6 +2113,7 @@ function drawClear() {
     drawUndoStack = [];
     activeStroke = null;
     if (textComposingEl) commitTextInput(true);
+    ensureDrawingRenderLoop();
 }
 
 // ============================================================
@@ -2447,9 +2617,15 @@ async function setupTabAudioMeter() {
 
 function startMeterAnimation() {
     if (meterAnimationId) return;  // 이미 실행 중
+    let lastMeterUpdate = 0;
 
     function updateMeters() {
-        updateAudioMeters();
+        const now = performance.now();
+        const minInterval = isRecordingActive() ? 100 : 0; // 녹화 중 UI 미터는 10Hz로 충분
+        if (now - lastMeterUpdate >= minInterval) {
+            updateAudioMeters();
+            lastMeterUpdate = now;
+        }
         meterAnimationId = requestAnimationFrame(updateMeters);
     }
     updateMeters();
@@ -3096,17 +3272,42 @@ function startRecording() {
 
     recordedChunks = [];
 
+    const hasScreenSource = !!(screenBg && screenBg.srcObject && screenBg.videoWidth && screenBg.videoHeight);
+    const sourceWidth = hasScreenSource ? screenBg.videoWidth : RECORDING_AVATAR_WIDTH;
+    const sourceHeight = hasScreenSource ? screenBg.videoHeight : RECORDING_AVATAR_HEIGHT;
+    const recordingSize = getRecordingCanvasSize(sourceWidth, sourceHeight);
+
+    if (hasScreenSource && (capturedScreenWidth !== sourceWidth || capturedScreenHeight !== sourceHeight)) {
+        capturedScreenWidth = sourceWidth;
+        capturedScreenHeight = sourceHeight;
+        updateZoomIndicator();
+    }
+
     // 합성 캔버스 생성 (DOM에 추가하여 captureStream 호환성 확보)
-    // 스크린 캡쳐 중이면 실제 캡쳐 해상도 사용, 아니면 기본 1920×1080
+    // 캡처 타겟의 실제 aspect ratio는 유지하고, 너무 큰 경우에만 FHD급으로 축소한다.
     compositeCanvas = document.createElement('canvas');
-    compositeCanvas.width = capturedScreenWidth > 0 ? capturedScreenWidth : 1920;
-    compositeCanvas.height = capturedScreenHeight > 0 ? capturedScreenHeight : 1080;
+    compositeCanvas.width = recordingSize.width;
+    compositeCanvas.height = recordingSize.height;
     compositeCanvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;';
     document.body.appendChild(compositeCanvas);
     compositeCtx = compositeCanvas.getContext('2d');
 
-    // 합성 루프 시작
-    function compositeFrame() {
+    // requestFrame 지원 브라우저에서는 합성한 프레임만 캡처한다.
+    let canvasStream = compositeCanvas.captureStream(0);
+    let canvasVideoTrack = canvasStream.getVideoTracks()[0];
+    let requestManualFrame = typeof canvasVideoTrack?.requestFrame === 'function'
+        ? () => canvasVideoTrack.requestFrame()
+        : null;
+    if (!requestManualFrame) {
+        canvasVideoTrack?.stop();
+        canvasStream = compositeCanvas.captureStream(RECORDING_TARGET_FPS);
+        canvasVideoTrack = canvasStream.getVideoTracks()[0];
+    }
+    let lastCompositeAt = 0;
+    startRecordingStats(compositeCanvas.width, compositeCanvas.height, sourceWidth, sourceHeight);
+
+    function drawCompositeFrame() {
+        const frameStart = performance.now();
         // 1. 배경 그리기 (블랙아웃이면 검정, 아니면 화면 공유)
         compositeCtx.fillStyle = '#000';
         compositeCtx.fillRect(0, 0, compositeCanvas.width, compositeCanvas.height);
@@ -3135,14 +3336,12 @@ function startRecording() {
                         compositeCtx.drawImage(screenBg, sx, sy, sw, sh, 0, 0, compositeCanvas.width, compositeCanvas.height);
                     }
                 }
-            } else if (capturedScreenWidth > 0) {
-                // 캡쳐 해상도가 확정된 경우: canvas = capturedScreenWidth×capturedScreenHeight
-                // 5인수 drawImage는 object-fit:contain 레터박스를 포함할 수 있어
-                // 뷰포트 변화 시 왼쪽 빈공간 + 내용 압축 현상 발생.
-                // 9인수 형식으로 소스 영역을 명시해 CSS 표현을 완전히 우회.
+            } else if (hasScreenSource) {
+                // 캡처 타겟의 현재 비디오 크기 전체를 녹화 캔버스에 맞춘다.
+                // 캔버스도 같은 aspect ratio라 왜곡 없이 스케일만 적용된다.
                 compositeCtx.drawImage(
                     screenBg,
-                    0, 0, capturedScreenWidth, capturedScreenHeight,
+                    0, 0, sourceWidth, sourceHeight,
                     0, 0, compositeCanvas.width, compositeCanvas.height
                 );
             } else {
@@ -3183,28 +3382,28 @@ function startRecording() {
 
             let miniX, miniY, scaledWidth, scaledHeight;
 
-            if (capturedScreenWidth > 0 && screenBg && screenBg.videoWidth) {
-                // 스크린 캡쳐 중: composite 캔버스 = 캡쳐 해상도
-                // 브라우저 뷰포트 좌표 → 캡쳐된 비디오 픽셀 좌표로 변환
+            if (hasScreenSource) {
+                // 스크린 캡쳐 중: 브라우저 뷰포트 좌표 → 녹화 캔버스 좌표로 변환
                 const renderRect = getScreenVideoRenderRect(screenBg);
                 if (renderRect) {
                     const { rx, ry, rw, rh } = renderRect;
-                    // 비디오 렌더 영역 기준 스케일 (1px browser = N px video)
-                    const scaleToVideo = capturedScreenWidth / rw;
-                    scaledWidth = miniWidth * scaleToVideo;
-                    scaledHeight = miniHeight * scaleToVideo;
+                    const scaleX = compositeCanvas.width / rw;
+                    const scaleY = compositeCanvas.height / rh;
+                    scaledWidth = miniWidth * scaleX;
+                    scaledHeight = miniHeight * scaleY;
 
                     const rightEdge = safeX + miniWidth;
                     const bottomEdge = safeY + miniHeight;
-                    miniX = ((rightEdge - rx) / rw) * capturedScreenWidth - scaledWidth;
-                    miniY = ((bottomEdge - ry) / rh) * capturedScreenHeight - scaledHeight;
+                    miniX = ((rightEdge - rx) / rw) * compositeCanvas.width - scaledWidth;
+                    miniY = ((bottomEdge - ry) / rh) * compositeCanvas.height - scaledHeight;
                 } else {
                     // 렌더 rect 없으면 비율 기반 fallback
-                    const scale = capturedScreenWidth / winW;
-                    scaledWidth = miniWidth * scale;
-                    scaledHeight = miniHeight * scale;
-                    miniX = ((safeX + miniWidth) / winW) * capturedScreenWidth - scaledWidth;
-                    miniY = ((safeY + miniHeight) / winH) * capturedScreenHeight - scaledHeight;
+                    const scaleX = compositeCanvas.width / winW;
+                    const scaleY = compositeCanvas.height / winH;
+                    scaledWidth = miniWidth * scaleX;
+                    scaledHeight = miniHeight * scaleY;
+                    miniX = ((safeX + miniWidth) / winW) * compositeCanvas.width - scaledWidth;
+                    miniY = ((safeY + miniHeight) / winH) * compositeCanvas.height - scaledHeight;
                 }
             } else {
                 // 스크린 캡쳐 없음: 뷰포트 비율로 매핑 (기존 로직)
@@ -3244,17 +3443,35 @@ function startRecording() {
         }
 
         // 3. 대화 메시지 그리기
-        drawDialogueToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
+        if (isDialogueEnabled && dialogueMessages.length > 0) {
+            drawDialogueToCanvas(compositeCtx, compositeCanvas.width, compositeCanvas.height);
+        }
 
         // 4. 드로잉 레이어 합성
         renderDrawingLayer(compositeCtx, compositeCanvas.width, compositeCanvas.height, performance.now());
 
+        if (requestManualFrame) requestManualFrame();
+
+        if (recordingStats) {
+            const frameDuration = performance.now() - frameStart;
+            recordingStats.compositeFrames += 1;
+            if (frameDuration > RECORDING_FRAME_INTERVAL) recordingStats.longCompositeFrames += 1;
+            reportRecordingStats();
+        }
+    }
+
+    // 합성 루프 시작: 캡처 목표 FPS에 맞춰 실제 합성 작업을 제한한다.
+    function compositeFrame(now) {
+        if (!compositeCanvas || !compositeCtx) return;
+        if (now - lastCompositeAt >= RECORDING_FRAME_INTERVAL) {
+            lastCompositeAt = now;
+            drawCompositeFrame();
+        } else if (recordingStats) {
+            recordingStats.compositeSkipped += 1;
+        }
         compositeAnimationId = requestAnimationFrame(compositeFrame);
     }
-    compositeFrame();
-
-    // 합성 캔버스 스트림 캡처 (30fps)
-    const canvasStream = compositeCanvas.captureStream(30);
+    compositeAnimationId = requestAnimationFrame(compositeFrame);
 
     // 오디오 합성
     // AudioContext 생성
@@ -3309,11 +3526,15 @@ function startRecording() {
         mimeType = 'video/webm';
     }
 
-    mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
+    mediaRecorder = new MediaRecorder(combinedStream, {
+        mimeType,
+        videoBitsPerSecond: getRecordingVideoBitsPerSecond(compositeCanvas.width, compositeCanvas.height),
+    });
 
     mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
             recordedChunks.push(e.data);
+            recordRecorderChunk(e.data.size);
         }
     };
 
@@ -3324,6 +3545,8 @@ function startRecording() {
     };
 
     mediaRecorder.onstop = () => {
+        stopRecordingStats();
+
         // 합성 루프 중지
         if (compositeAnimationId) {
             cancelAnimationFrame(compositeAnimationId);
@@ -3749,9 +3972,18 @@ async function switchAvatar(url) {
 function animate() {
     requestAnimationFrame(animate);
 
+    const frameStart = performance.now();
     const currentTime = performance.now();
     const deltaTime = (currentTime - lastFrameTime) / 1000; // 초 단위
     lastFrameTime = currentTime;
+
+    if (shouldPauseAvatarWorkForRecording()) {
+        if (recordingStats) {
+            recordingStats.animateFrames += 1;
+            reportRecordingStats();
+        }
+        return;
+    }
 
     if (video && video.readyState >= 2) {
         if (DEBUG_MODE && debugCtx) {
@@ -3761,15 +3993,27 @@ function animate() {
         // 펜 획을 긋는 동안은 인식을 ~150ms 주기로 낮춰 메인 스레드를 입력 처리에 양보
         // (detectForVideo가 프레임당 수십 ms 블로킹 → pointermove 유실로 선이 끊기는 문제 완화)
         const throttleDetection = activeStroke && (currentTime - lastDetectionTime) < 150;
+        const videoFrameChanged = video.currentTime !== lastVideoTime;
+        const recording = isRecordingActive();
+        const canDetect = videoFrameChanged && !throttleDetection && !poseFrozen;
+        const shouldRunFace = canDetect && (
+            !recording || currentTime - lastFaceDetectionTime >= RECORDING_FRAME_INTERVAL
+        );
+        const shouldRunBody = canDetect && BODY_TRACKING_ENABLED && (
+            !recording || currentTime - lastBodyDetectionTime >= RECORDING_BODY_INTERVAL
+        );
 
         // poseFrozen: 디버그 프리즈 중에는 트래킹 적용을 멈추고 수동 본 편집 상태 유지
-        if (video.currentTime !== lastVideoTime && !throttleDetection && !poseFrozen) {
+        if (shouldRunFace || shouldRunBody) {
             lastVideoTime = video.currentTime;
             lastDetectionTime = currentTime;
 
             // 1. Detect Face
-            if (faceLandmarker) {
+            if (shouldRunFace && faceLandmarker) {
+                const detectStart = performance.now();
                 const results = faceLandmarker.detectForVideo(video, currentTime);
+                recordDetectDuration('face', performance.now() - detectStart);
+                lastFaceDetectionTime = currentTime;
 
                 // Body tracking이 꺼져 있으면 얼굴 폭으로 거리 신뢰도 갱신 (멀수록 스무딩 강화)
                 if (!BODY_TRACKING_ENABLED && results.faceLandmarks && results.faceLandmarks.length > 0) {
@@ -3792,14 +4036,17 @@ function animate() {
             }
 
             // 2. Body Tracking이 활성화된 경우에만 Hand/Pose 처리
-            if (BODY_TRACKING_ENABLED) {
+            if (shouldRunBody) {
+                lastBodyDetectionTime = currentTime;
                 // Hand tracking 결과 초기화
                 detectedHands.left = null;
                 detectedHands.right = null;
 
                 let handResults = null;
                 if (handLandmarker) {
+                    const detectStart = performance.now();
                     handResults = handLandmarker.detectForVideo(video, currentTime);
+                    recordDetectDuration('hand', performance.now() - detectStart);
                     if (handResults.landmarks && handResults.landmarks.length > 0) {
                         // 아바타 기준 좌우로 저장 — tasks-vision 라벨은 해부학적 기준이라
                         // 미러 모드에서 사용자 왼손("Left")이 아바타 오른손이 됨
@@ -3828,7 +4075,9 @@ function animate() {
                 let framePoseLandmarks = null;
                 let frameWorldLandmarks = null;
                 if (poseLandmarker) {
+                    const detectStart = performance.now();
                     const poseResults = poseLandmarker.detectForVideo(video, currentTime);
+                    recordDetectDuration('pose', performance.now() - detectStart);
                     if (poseResults.landmarks && poseResults.landmarks.length > 0) {
                         const rawLandmarks = poseResults.landmarks[0];
                         const rawWorldLandmarks = poseResults.worldLandmarks ? poseResults.worldLandmarks[0] : null;
@@ -3869,7 +4118,7 @@ function animate() {
                 // 모션 레코딩: 입력(랜드마크)과 출력(본 회전)을 프레임 단위로 기록
                 // (본 적용이 모두 끝난 시점에 캡처해야 입력↔출력이 같은 프레임으로 짝지어짐)
                 captureMotionFrame(framePoseLandmarks, frameWorldLandmarks, currentTime);
-            } else {
+            } else if (!BODY_TRACKING_ENABLED) {
                 // Body tracking 비활성화 시 팔을 자연스럽게 내림
                 resetPose(deltaTime);
             }
@@ -3885,6 +4134,13 @@ function animate() {
     }
 
     renderer.render(scene, camera);
+
+    if (recordingStats) {
+        const frameDuration = performance.now() - frameStart;
+        recordingStats.animateFrames += 1;
+        if (frameDuration > RECORDING_FRAME_INTERVAL) recordingStats.longAnimateFrames += 1;
+        reportRecordingStats();
+    }
 }
 
 // ============================================================
